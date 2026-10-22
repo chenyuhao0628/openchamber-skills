@@ -1,6 +1,6 @@
 {
   "name": "openchamber-skills",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "description": "OpenChamber 技能开关：启停 OpenCode 技能、中文翻译和联动分组。",
@@ -20,11 +20,11 @@
         "entry": "service/main.js",
         "runtime": "host",
         "permissions": {}
-      }
-    },
-    "capabilities": [
-      "model"
-    ]
+      },
+      "capabilities": [
+        "model"
+      ]
+    }
   },
   "scripts": {
     "build": "node scripts/build.mjs",
