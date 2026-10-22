@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   SkillsError,
+  batchSetEnabled,
   bulkSetEnabled,
   parseFrontmatter,
   resolveBoth,
@@ -106,6 +107,7 @@ test('scan reads only the OpenCode directory and reports entry conflicts', async
   const scan = await scanSkills(directory);
   const byId = new Map(scan.skills.map((skill) => [skill.id, skill]));
   assert.equal(byId.get('alpha')?.advertised, true);
+  assert.equal(byId.get('alpha')?.contentHash.length, 64);
   assert.equal(byId.get('beta')?.advertised, true);
   assert.equal(byId.get('team')?.advertised, true);
   assert.equal(byId.get('manual')?.advertised, false);
@@ -244,4 +246,13 @@ test('bulk operations cover the OpenCode directory', async (t) => {
   scan = await scanSkills(directory);
   assert.equal(scan.skills.find((skill) => skill.id === 'alpha')?.state, 'enabled');
   assert.equal(scan.summary.disabled, 0);
+
+  const groupOff = await batchSetEnabled(directory, [], ['alpha', 'beta']);
+  assert.deepEqual(groupOff.changed.sort(), ['alpha', 'beta']);
+  assert.equal(await exists(`${alpha}.disabled`), true);
+  assert.equal(await exists(`${beta}.disabled`), true);
+  const groupOn = await batchSetEnabled(directory, ['alpha', 'beta'], []);
+  assert.deepEqual(groupOn.changed.sort(), ['alpha', 'beta']);
+  assert.equal(await exists(alpha), true);
+  assert.equal(await exists(beta), true);
 });

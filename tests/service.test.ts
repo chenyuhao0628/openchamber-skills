@@ -105,8 +105,9 @@ test('skills service enforces auth and checks entry conflicts', async (t) => {
   await t.test('lists only the OpenCode directory', async () => {
     const result = await call('/skills');
     assert.equal(result.status, 200);
-    const skills = result.data.skills as Array<{ id: string; advertised: boolean }>;
+    const skills = result.data.skills as Array<{ id: string; advertised: boolean; contentHash: string }>;
     assert.equal(skills.find((skill) => skill.id === 'alpha')?.advertised, true);
+    assert.equal(skills.find((skill) => skill.id === 'alpha')?.contentHash.length, 64);
     assert.equal(skills.find((skill) => skill.id === 'beta')?.advertised, true);
     assert.equal(skills.some((skill) => skill.id === 'other'), false);
   });
@@ -136,6 +137,34 @@ test('skills service enforces auth and checks entry conflicts', async (t) => {
     assert.equal(on.status, 200);
     assert.equal(await exists(alpha), true);
     assert.equal(await exists(beta), true);
+  });
+
+  await t.test('batch changes only the requested skills', async () => {
+    const off = await call('/skills/batch', 'POST', { enable: [], disable: ['alpha'] });
+    assert.equal(off.status, 200);
+    assert.equal(await exists(`${alpha}.disabled`), true);
+    assert.equal(await exists(beta), true);
+    const on = await call('/skills/batch', 'POST', { enable: ['alpha'], disable: [] });
+    assert.equal(on.status, 200);
+    assert.equal(await exists(alpha), true);
+  });
+
+  await t.test('stores translation cache privately', async () => {
+    const initial = await call('/translations');
+    assert.equal(initial.status, 200);
+    assert.deepEqual(initial.data.entries, {});
+    const saved = await call('/translations', 'POST', {
+      version: 1,
+      locale: 'zh-CN',
+      entries: {
+        alpha: { hash: 'abc', nameZh: '阿尔法', descriptionZh: '中文说明', updatedAt: 1 },
+      },
+    });
+    assert.equal(saved.status, 200);
+    assert.equal((saved.data.entries as Record<string, { nameZh: string }>).alpha.nameZh, '阿尔法');
+    const cacheFile = path.join(fixture, '.config/openchamber/skills-manager/translations.json');
+    const cacheStat = await stat(cacheFile);
+    assert.equal(cacheStat.mode & 0o777, 0o600);
   });
 
   await t.test('reports both-file conflicts and resolves them explicitly', async () => {

@@ -1,8 +1,9 @@
 import fs from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type {
+  BatchResponse,
   BulkResponse,
   ConflictKind,
   ConflictView,
@@ -43,6 +44,7 @@ type Entry = {
   disabledPath: string | null;
   frontmatter: Frontmatter;
   error: string | null;
+  hash: string;
 };
 
 type Move = { id: string; from: string; to: string };
@@ -219,7 +221,7 @@ const readFrontmatterFor = async (
   id: string,
   activePath: string | null,
   disabledPath: string | null,
-): Promise<{ frontmatter: Frontmatter; error: string | null }> => {
+): Promise<{ frontmatter: Frontmatter; error: string | null; hash: string }> => {
   let activeError: string | null = null;
   if (activePath) {
     try {
@@ -227,7 +229,7 @@ const readFrontmatterFor = async (
       if (info.size > MAX_SKILL_BYTES) activeError = '入口文件超过 2 MB';
       else {
         const text = await fs.readFile(activePath, 'utf8');
-        return { frontmatter: parseFrontmatter(text, id), error: null };
+        return { frontmatter: parseFrontmatter(text, id), error: null, hash: createHash('sha256').update(text).digest('hex') };
       }
     } catch (error) {
       activeError = describeFs(error);
@@ -237,15 +239,15 @@ const readFrontmatterFor = async (
     try {
       const info = await fs.stat(disabledPath);
       if (info.size > MAX_SKILL_BYTES) {
-        return { frontmatter: fallbackFrontmatter(id), error: activeError ?? '停用入口超过 2 MB' };
+        return { frontmatter: fallbackFrontmatter(id), error: activeError ?? '停用入口超过 2 MB', hash: '' };
       }
       const text = await fs.readFile(disabledPath, 'utf8');
-      return { frontmatter: parseFrontmatter(text, id), error: activeError };
+      return { frontmatter: parseFrontmatter(text, id), error: activeError, hash: createHash('sha256').update(text).digest('hex') };
     } catch (error) {
-      return { frontmatter: fallbackFrontmatter(id), error: activeError ?? describeFs(error) };
+      return { frontmatter: fallbackFrontmatter(id), error: activeError ?? describeFs(error), hash: '' };
     }
   }
-  return { frontmatter: fallbackFrontmatter(id), error: activeError ?? '无法读取入口文件' };
+  return { frontmatter: fallbackFrontmatter(id), error: activeError ?? '无法读取入口文件', hash: '' };
 };
 
 const scanDirectory = async (
@@ -272,8 +274,8 @@ const scanDirectory = async (
     const id = path.basename(directory);
     const activePath = active ? path.join(directory, 'SKILL.md') : null;
     const disabledPath = disabled ? path.join(directory, 'SKILL.md.disabled') : null;
-    const { frontmatter, error } = await readFrontmatterFor(id, activePath, disabledPath);
-    entries.push({ id, activePath, disabledPath, frontmatter, error });
+    const { frontmatter, error, hash } = await readFrontmatterFor(id, activePath, disabledPath);
+    entries.push({ id, activePath, disabledPath, frontmatter, error, hash });
     if (active) return;
   }
 
@@ -296,8 +298,8 @@ const scanDirectory = async (
       const activePath = activeItem ? path.join(directory, activeItem.entry.name) : null;
       const disabledPath = disabledItem ? path.join(directory, disabledItem.entry.name) : null;
       if (!activePath && !disabledPath) continue;
-      const { frontmatter, error } = await readFrontmatterFor(id, activePath, disabledPath);
-      entries.push({ id, activePath, disabledPath, frontmatter, error });
+      const { frontmatter, error, hash } = await readFrontmatterFor(id, activePath, disabledPath);
+      entries.push({ id, activePath, disabledPath, frontmatter, error, hash });
     }
   }
 
@@ -451,6 +453,7 @@ const buildResponse = (root: RootView, entries: Entry[]): SkillsResponse => {
       conflicts,
       warnings: Array.from(new Set(conflicts.filter((conflict) => !conflict.blocking).map((conflict) => conflict.message))),
       estimatedTokens: advertised ? estimateTokens(name, id, description) : 0,
+      contentHash: winner?.hash ?? group[0]?.hash ?? '',
     });
   }
 
@@ -567,6 +570,50 @@ export const setSkillEnabled = async (home: string, id: string, enabled: boolean
   }
   if (moves.length > 0) await applyMoves(moves);
   return scanSkills(home);
+};
+
+export const batchSetEnabled = async (
+  home: string,
+  enable: string[],
+  disable: string[],
+): Promise<BatchResponse> => {
+  const before = await scanSkills(home);
+  assertRootReadable(before);
+  const enableIds = Array.from(new Set(enable));
+  const disableIds = Array.from(new Set(disable));
+  if (enableIds.some((id) => disableIds.includes(id))) {
+    throw new SkillsError('invalid-request', 400, '同一个技能不能同时启用和关闭。');
+  }
+  if (enableIds.length + disableIds.length > 200) {
+    throw new SkillsError('invalid-request', 400, '一次处理的技能过多。');
+  }
+  const byId = new Map(before.skills.map((skill) => [skill.id, skill]));
+  for (const id of [...enableIds, ...disableIds]) {
+    const skill = byId.get(id);
+    if (!skill) throw new SkillsError('not-found', 404, `没有找到技能 ${id}`);
+    if (skill.conflicts.some((conflict) => conflict.kind === 'both')) {
+      throw new SkillsError('conflict', 409, `技能 ${id} 有未解决的入口冲突。`, skill.conflicts);
+    }
+  }
+  const moves: Move[] = [];
+  for (const id of enableIds) {
+    const skill = byId.get(id);
+    if (!skill) continue;
+    for (const disabledPath of skill.disabledPaths) {
+      if (!disabledPath.endsWith('.disabled')) continue;
+      moves.push({ id, from: disabledPath, to: disabledPath.slice(0, -'.disabled'.length) });
+    }
+  }
+  for (const id of disableIds) {
+    const skill = byId.get(id);
+    if (!skill) continue;
+    for (const activePath of skill.activePaths) {
+      moves.push({ id, from: activePath, to: `${activePath}.disabled` });
+    }
+  }
+  if (moves.length > 0) await applyMoves(moves);
+  const after = await scanSkills(home);
+  return { ...after, changed: Array.from(new Set(moves.map((move) => move.id))) };
 };
 
 export const bulkSetEnabled = async (home: string, enabled: boolean): Promise<BulkResponse> => {

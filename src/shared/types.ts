@@ -36,6 +36,7 @@ export type SkillView = {
   conflicts: ConflictView[];
   warnings: string[];
   estimatedTokens: number;
+  contentHash: string;
 };
 
 export type Summary = {
@@ -56,6 +57,23 @@ export type SkillsResponse = {
 };
 
 export type BulkResponse = SkillsResponse & {
+  changed: string[];
+};
+
+export type TranslationEntry = {
+  hash: string;
+  nameZh: string;
+  descriptionZh: string;
+  updatedAt: number;
+};
+
+export type TranslationCache = {
+  version: 1;
+  locale: 'zh-CN';
+  entries: Record<string, TranslationEntry>;
+};
+
+export type BatchResponse = SkillsResponse & {
   changed: string[];
 };
 

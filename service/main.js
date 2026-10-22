@@ -5,7 +5,7 @@ import os from "node:os";
 // src/core/skills.ts
 import fs from "node:fs/promises";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 var ROOT_DIR = [".config", "opencode", "skills"];
 var MAX_DEPTH = 6;
 var MAX_SKILL_BYTES = 2e6;
@@ -175,7 +175,7 @@ var readFrontmatterFor = async (id, activePath, disabledPath) => {
       if (info.size > MAX_SKILL_BYTES) activeError = "\u5165\u53E3\u6587\u4EF6\u8D85\u8FC7 2 MB";
       else {
         const text = await fs.readFile(activePath, "utf8");
-        return { frontmatter: parseFrontmatter(text, id), error: null };
+        return { frontmatter: parseFrontmatter(text, id), error: null, hash: createHash("sha256").update(text).digest("hex") };
       }
     } catch (error) {
       activeError = describeFs(error);
@@ -185,15 +185,15 @@ var readFrontmatterFor = async (id, activePath, disabledPath) => {
     try {
       const info = await fs.stat(disabledPath);
       if (info.size > MAX_SKILL_BYTES) {
-        return { frontmatter: fallbackFrontmatter(id), error: activeError ?? "\u505C\u7528\u5165\u53E3\u8D85\u8FC7 2 MB" };
+        return { frontmatter: fallbackFrontmatter(id), error: activeError ?? "\u505C\u7528\u5165\u53E3\u8D85\u8FC7 2 MB", hash: "" };
       }
       const text = await fs.readFile(disabledPath, "utf8");
-      return { frontmatter: parseFrontmatter(text, id), error: activeError };
+      return { frontmatter: parseFrontmatter(text, id), error: activeError, hash: createHash("sha256").update(text).digest("hex") };
     } catch (error) {
-      return { frontmatter: fallbackFrontmatter(id), error: activeError ?? describeFs(error) };
+      return { frontmatter: fallbackFrontmatter(id), error: activeError ?? describeFs(error), hash: "" };
     }
   }
-  return { frontmatter: fallbackFrontmatter(id), error: activeError ?? "\u65E0\u6CD5\u8BFB\u53D6\u5165\u53E3\u6587\u4EF6" };
+  return { frontmatter: fallbackFrontmatter(id), error: activeError ?? "\u65E0\u6CD5\u8BFB\u53D6\u5165\u53E3\u6587\u4EF6", hash: "" };
 };
 var scanDirectory = async (root, directory, depth, entries, visited) => {
   let dirents;
@@ -211,8 +211,8 @@ var scanDirectory = async (root, directory, depth, entries, visited) => {
     const id = path.basename(directory);
     const activePath = active ? path.join(directory, "SKILL.md") : null;
     const disabledPath = disabled ? path.join(directory, "SKILL.md.disabled") : null;
-    const { frontmatter, error } = await readFrontmatterFor(id, activePath, disabledPath);
-    entries.push({ id, activePath, disabledPath, frontmatter, error });
+    const { frontmatter, error, hash } = await readFrontmatterFor(id, activePath, disabledPath);
+    entries.push({ id, activePath, disabledPath, frontmatter, error, hash });
     if (active) return;
   }
   if (depth === 0) {
@@ -229,8 +229,8 @@ var scanDirectory = async (root, directory, depth, entries, visited) => {
       const activePath = activeItem ? path.join(directory, activeItem.entry.name) : null;
       const disabledPath = disabledItem ? path.join(directory, disabledItem.entry.name) : null;
       if (!activePath && !disabledPath) continue;
-      const { frontmatter, error } = await readFrontmatterFor(id, activePath, disabledPath);
-      entries.push({ id, activePath, disabledPath, frontmatter, error });
+      const { frontmatter, error, hash } = await readFrontmatterFor(id, activePath, disabledPath);
+      entries.push({ id, activePath, disabledPath, frontmatter, error, hash });
     }
   }
   if (depth >= MAX_DEPTH) return;
@@ -361,7 +361,8 @@ var buildResponse = (root, entries) => {
       disabledPaths: disabled.flatMap((entry) => entry.disabledPath ? [entry.disabledPath] : []),
       conflicts: conflicts2,
       warnings: Array.from(new Set(conflicts2.filter((conflict) => !conflict.blocking).map((conflict) => conflict.message))),
-      estimatedTokens: advertised ? estimateTokens(name, id, description) : 0
+      estimatedTokens: advertised ? estimateTokens(name, id, description) : 0,
+      contentHash: winner?.hash ?? group[0]?.hash ?? ""
     });
   }
   skills.sort((left, right) => left.id.localeCompare(right.id));
@@ -471,6 +472,45 @@ var setSkillEnabled = async (home, id, enabled) => {
   if (moves.length > 0) await applyMoves(moves);
   return scanSkills(home);
 };
+var batchSetEnabled = async (home, enable, disable) => {
+  const before = await scanSkills(home);
+  assertRootReadable(before);
+  const enableIds = Array.from(new Set(enable));
+  const disableIds = Array.from(new Set(disable));
+  if (enableIds.some((id) => disableIds.includes(id))) {
+    throw new SkillsError("invalid-request", 400, "\u540C\u4E00\u4E2A\u6280\u80FD\u4E0D\u80FD\u540C\u65F6\u542F\u7528\u548C\u5173\u95ED\u3002");
+  }
+  if (enableIds.length + disableIds.length > 200) {
+    throw new SkillsError("invalid-request", 400, "\u4E00\u6B21\u5904\u7406\u7684\u6280\u80FD\u8FC7\u591A\u3002");
+  }
+  const byId = new Map(before.skills.map((skill) => [skill.id, skill]));
+  for (const id of [...enableIds, ...disableIds]) {
+    const skill = byId.get(id);
+    if (!skill) throw new SkillsError("not-found", 404, `\u6CA1\u6709\u627E\u5230\u6280\u80FD ${id}`);
+    if (skill.conflicts.some((conflict) => conflict.kind === "both")) {
+      throw new SkillsError("conflict", 409, `\u6280\u80FD ${id} \u6709\u672A\u89E3\u51B3\u7684\u5165\u53E3\u51B2\u7A81\u3002`, skill.conflicts);
+    }
+  }
+  const moves = [];
+  for (const id of enableIds) {
+    const skill = byId.get(id);
+    if (!skill) continue;
+    for (const disabledPath of skill.disabledPaths) {
+      if (!disabledPath.endsWith(".disabled")) continue;
+      moves.push({ id, from: disabledPath, to: disabledPath.slice(0, -".disabled".length) });
+    }
+  }
+  for (const id of disableIds) {
+    const skill = byId.get(id);
+    if (!skill) continue;
+    for (const activePath of skill.activePaths) {
+      moves.push({ id, from: activePath, to: `${activePath}.disabled` });
+    }
+  }
+  if (moves.length > 0) await applyMoves(moves);
+  const after = await scanSkills(home);
+  return { ...after, changed: Array.from(new Set(moves.map((move) => move.id))) };
+};
 var bulkSetEnabled = async (home, enabled) => {
   const before = await scanSkills(home);
   assertRootReadable(before);
@@ -533,6 +573,104 @@ var resolveBoth = async (home, entryPath, keep) => {
   return { ...after, backupPath };
 };
 
+// src/core/translations.ts
+import fs2 from "node:fs/promises";
+import path2 from "node:path";
+import { randomUUID as randomUUID2 } from "node:crypto";
+var DATA_DIR = [".config", "openchamber", "skills-manager"];
+var CACHE_FILE = "translations.json";
+var MAX_ENTRIES = 300;
+var MAX_NAME = 300;
+var MAX_DESCRIPTION = 8e3;
+var TranslationError = class extends Error {
+  code;
+  status;
+  constructor(code, status, message) {
+    super(message);
+    this.name = "TranslationError";
+    this.code = code;
+    this.status = status;
+  }
+};
+var empty = () => ({ version: 1, locale: "zh-CN", entries: {} });
+var cacheFile = (home) => path2.join(home, ...DATA_DIR, CACHE_FILE);
+var validateEntry = (value) => {
+  if (!value || typeof value !== "object") return null;
+  const record = value;
+  if (typeof record.hash !== "string" || typeof record.nameZh !== "string" || typeof record.descriptionZh !== "string" || typeof record.updatedAt !== "number") {
+    return null;
+  }
+  const hash = record.hash.slice(0, 128);
+  const nameZh = record.nameZh.trim().slice(0, MAX_NAME);
+  const descriptionZh = record.descriptionZh.trim().slice(0, MAX_DESCRIPTION);
+  if (!hash || !nameZh) return null;
+  return { hash, nameZh, descriptionZh, updatedAt: record.updatedAt };
+};
+var readTranslations = async (home) => {
+  let raw;
+  try {
+    raw = await fs2.readFile(cacheFile(home), "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return empty();
+    throw new TranslationError("read-error", 500, "\u65E0\u6CD5\u8BFB\u53D6\u7FFB\u8BD1\u7F13\u5B58\uFF0C\u8BF7\u68C0\u67E5\u6587\u4EF6\u6743\u9650\u3002");
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed.version !== 1 || parsed.locale !== "zh-CN" || !parsed.entries || typeof parsed.entries !== "object") {
+      throw new Error("invalid cache");
+    }
+    const entries = {};
+    for (const [id, value] of Object.entries(parsed.entries)) {
+      if (!id || id.length > 128) continue;
+      const entry = validateEntry(value);
+      if (entry) entries[id] = entry;
+    }
+    return { version: 1, locale: "zh-CN", entries };
+  } catch {
+    throw new TranslationError("invalid-cache", 500, "\u7FFB\u8BD1\u7F13\u5B58\u6587\u4EF6\u635F\u574F\uFF1B\u539F\u6587\u4EF6\u672A\u4FEE\u6539\u3002");
+  }
+};
+var writeTranslations = async (home, value) => {
+  if (!value || typeof value !== "object") {
+    throw new TranslationError("invalid-cache", 400, "\u7FFB\u8BD1\u7F13\u5B58\u683C\u5F0F\u4E0D\u6B63\u786E\u3002");
+  }
+  const record = value;
+  if (record.version !== 1 || record.locale !== "zh-CN" || !record.entries || typeof record.entries !== "object" || Array.isArray(record.entries)) {
+    throw new TranslationError("invalid-cache", 400, "\u7FFB\u8BD1\u7F13\u5B58\u683C\u5F0F\u4E0D\u6B63\u786E\u3002");
+  }
+  const rawEntries = Object.entries(record.entries);
+  if (rawEntries.length > MAX_ENTRIES) {
+    throw new TranslationError("invalid-cache", 400, "\u7FFB\u8BD1\u7F13\u5B58\u6761\u76EE\u8FC7\u591A\u3002");
+  }
+  const entries = {};
+  for (const [id, item] of rawEntries) {
+    if (!id || id.length > 128) continue;
+    const entry = validateEntry(item);
+    if (entry) entries[id] = entry;
+  }
+  const dir = path2.join(home, ...DATA_DIR);
+  const file = cacheFile(home);
+  const temporary = `${file}.${randomUUID2()}.tmp`;
+  try {
+    await fs2.mkdir(dir, { recursive: true, mode: 448 });
+    await fs2.writeFile(temporary, `${JSON.stringify({ version: 1, locale: "zh-CN", entries }, null, 2)}
+`, {
+      encoding: "utf8",
+      mode: 384
+    });
+    await fs2.rename(temporary, file);
+    const check = await readTranslations(home);
+    return check;
+  } catch (error) {
+    try {
+      await fs2.unlink(temporary);
+    } catch {
+    }
+    if (error instanceof TranslationError) throw error;
+    throw new TranslationError("write-error", 500, "\u4FDD\u5B58\u7FFB\u8BD1\u7F13\u5B58\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u76EE\u5F55\u6743\u9650\u3002");
+  }
+};
+
 // src/service/main.ts
 var port = Number(process.env.OPENCHAMBER_SERVICE_PORT);
 var token = process.env.OPENCHAMBER_SERVICE_TOKEN ?? "";
@@ -555,7 +693,7 @@ var readBody = (req) => new Promise((resolve, reject) => {
   req.on("data", (chunk) => {
     if (failed) return;
     size += chunk.length;
-    if (size > 64 * 1024) {
+    if (size > 256 * 1024) {
       failed = true;
       chunks.length = 0;
       reject(new SkillsError("too-large", 413, "\u63D0\u4EA4\u5185\u5BB9\u8FC7\u5927"));
@@ -594,6 +732,14 @@ var booleanField = (body, key) => {
   if (typeof value !== "boolean") throw new SkillsError("invalid-request", 400, `${key} \u5FC5\u987B\u662F\u5E03\u5C14\u503C`);
   return value;
 };
+var stringArrayField = (body, key) => {
+  const value = body[key];
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item.length === 0 || item.length > 128)) {
+    throw new SkillsError("invalid-request", 400, `${key} \u5FC5\u987B\u662F\u6280\u80FD ID \u6570\u7EC4`);
+  }
+  if (value.length > 200) throw new SkillsError("invalid-request", 400, `${key} \u6761\u76EE\u8FC7\u591A`);
+  return value;
+};
 var handle = async (req, res) => {
   if (req.headers.authorization !== `Bearer ${token}`) {
     throw new SkillsError("unauthorized", 401, "unauthorized");
@@ -620,6 +766,22 @@ var handle = async (req, res) => {
     json(res, 200, await exclusive(() => bulkSetEnabled(HOME, enabled)));
     return;
   }
+  if (url.pathname === "/skills/batch" && req.method === "POST") {
+    const body = await readBody(req);
+    const enable = stringArrayField(body, "enable");
+    const disable = stringArrayField(body, "disable");
+    json(res, 200, await exclusive(() => batchSetEnabled(HOME, enable, disable)));
+    return;
+  }
+  if (url.pathname === "/translations" && req.method === "GET") {
+    json(res, 200, await exclusive(() => readTranslations(HOME)));
+    return;
+  }
+  if (url.pathname === "/translations" && req.method === "POST") {
+    const body = await readBody(req);
+    json(res, 200, await exclusive(() => writeTranslations(HOME, body)));
+    return;
+  }
   if (url.pathname === "/skills/resolve" && req.method === "POST") {
     const body = await readBody(req);
     const entryPath = stringField(body, "path", 4096);
@@ -633,11 +795,11 @@ var handle = async (req, res) => {
 var server = http.createServer((req, res) => {
   void handle(req, res).catch((error) => {
     if (res.headersSent || res.destroyed) return;
-    if (error instanceof SkillsError) {
+    if (error instanceof SkillsError || error instanceof TranslationError) {
       json(res, error.status, {
         error: error.message,
         code: error.code,
-        ...error.conflicts ? { conflicts: error.conflicts } : {}
+        ...error instanceof SkillsError && error.conflicts ? { conflicts: error.conflicts } : {}
       });
       return;
     }

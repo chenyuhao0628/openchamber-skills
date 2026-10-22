@@ -8,7 +8,11 @@ import type {
   SkillView,
   SkillsResponse,
   Summary,
+  TranslationCache,
+  TranslationEntry,
 } from '../shared/types.ts';
+import { SKILL_GROUPS, type SkillGroup } from '../shared/groups.ts';
+import { TRANSLATION_SYSTEM, buildTranslationPrompt, parseTranslationResponse } from './translate.ts';
 import css from './style.css';
 import native from '../../ui/native.css';
 
@@ -96,6 +100,7 @@ const parseSkill = (value: unknown): SkillView | null => {
       ? record.warnings.filter((item): item is string => typeof item === 'string')
       : [],
     estimatedTokens: asNumber(record.estimatedTokens),
+    contentHash: asString(record.contentHash),
   };
 };
 
@@ -137,6 +142,36 @@ const parseResponse = (value: unknown): SkillsResponse => {
   };
 };
 
+const emptyTranslations = (): TranslationCache => ({ version: 1, locale: 'zh-CN', entries: {} });
+
+const parseTranslationCache = (value: unknown): TranslationCache => {
+  if (!value || typeof value !== 'object') throw new ServiceError('翻译缓存格式不正确。', 'parse', []);
+  const record = value as Record<string, unknown>;
+  if (record.version !== 1 || record.locale !== 'zh-CN' || !record.entries || typeof record.entries !== 'object' || Array.isArray(record.entries)) {
+    throw new ServiceError('翻译缓存格式不正确。', 'parse', []);
+  }
+  const entries: Record<string, TranslationEntry> = {};
+  for (const [id, item] of Object.entries(record.entries as Record<string, unknown>)) {
+    if (!item || typeof item !== 'object') continue;
+    const entry = item as Record<string, unknown>;
+    if (
+      typeof entry.hash !== 'string' ||
+      typeof entry.nameZh !== 'string' ||
+      typeof entry.descriptionZh !== 'string' ||
+      typeof entry.updatedAt !== 'number'
+    ) {
+      continue;
+    }
+    entries[id] = {
+      hash: entry.hash,
+      nameZh: entry.nameZh.trim(),
+      descriptionZh: entry.descriptionZh.trim(),
+      updatedAt: entry.updatedAt,
+    };
+  }
+  return { version: 1, locale: 'zh-CN', entries };
+};
+
 const request = async (method: 'GET' | 'POST', path: string, body?: unknown): Promise<unknown> => {
   const response = await host.serviceRequest({
     method,
@@ -167,6 +202,8 @@ const describeError = (error: unknown): string => {
     if (error.code === 'SERVICE_FAILED') return '本地服务尚未就绪，请重新加载扩展后重试。';
     if (error.code === 'DISABLED') return '技能开关扩展已停用，请在扩展设置中启用。';
     if (error.code === 'HOST_TIMEOUT') return '本地服务响应超时，请重试。';
+    if (error.code === 'NOT_GRANTED') return '请在扩展设置中允许“模型调用”权限，或重新安装扩展。';
+    if (error.code === 'UNSUPPORTED') return '当前宿主或模型不支持翻译请求。';
     return '无法连接本地服务，请检查扩展授权。';
   }
   if (error instanceof ServiceError) return error.message;
@@ -183,7 +220,7 @@ const refresh = mountButton(actionRoot, {
   label: '重新扫描',
   variant: 'outline',
   size: 'sm',
-  onClick: () => void loadSkills(true),
+  onClick: () => void loadAll(true),
 });
 const enableAll = mountButton(actionRoot, {
   label: '全部启用',
@@ -200,11 +237,28 @@ const disableAll = mountButton(actionRoot, {
 titleRow.append(title, actionRoot);
 const summary = el('p', 'sk-summary');
 const summarySecondary = el('p', 'sk-summary sk-summary-secondary');
-header.append(titleRow, summary, summarySecondary);
+
+const translationRow = el('div', 'sk-translation-row');
+const translationSegment = el('div', 'sk-segment');
+translationSegment.setAttribute('role', 'group');
+translationSegment.setAttribute('aria-label', '技能说明语言');
+const translateButton = el('button', 'sk-segment-button', '翻译');
+translateButton.type = 'button';
+translateButton.setAttribute('aria-pressed', 'false');
+const originalButton = el('button', 'sk-segment-button', '原文');
+originalButton.type = 'button';
+originalButton.setAttribute('aria-pressed', 'true');
+translationSegment.append(translateButton, originalButton);
+const translationStatus = el('span', 'sk-translation-status');
+translationStatus.setAttribute('aria-live', 'polite');
+translationRow.append(translationSegment, translationStatus);
+header.append(titleRow, summary, summarySecondary, translationRow);
 
 const body = el('div', 'sk-body');
 const noticeRoot = el('div', 'sk-notice-root');
 noticeRoot.setAttribute('aria-live', 'polite');
+const groupsRoot = el('div', 'sk-groups');
+const groupBarRoot = el('div');
 const conflictRoot = el('div');
 const search = el('input', 'sk-search') as HTMLInputElement;
 search.type = 'search';
@@ -221,16 +275,24 @@ footer.append(
   el('p', '', '管理 ~/.config/opencode/skills。关闭会把技能入口改名为 .disabled；OpenCode 不再加载，模型也看不到。'),
   el('p', '', '只显示这个目录里的文件技能。停用或卸载前先全部启用；技能更新后重新扫描。'),
 );
-body.append(noticeRoot, conflictRoot, search, listRoot, footer);
+body.append(noticeRoot, groupsRoot, groupBarRoot, conflictRoot, search, listRoot, footer);
 app.append(header, body);
 root.append(app);
 
 let data: SkillsResponse | null = null;
+let translations: TranslationCache = emptyTranslations();
+let displayMode: 'original' | 'translated' = 'original';
+let translationPreferenceSet = false;
+let translating = false;
+let translationProgress = { done: 0, total: 0 };
+let translationError: string | null = null;
 let loading = false;
 let loadError: string | null = null;
 let notice: Notice | null = null;
 let busy: string | null = null;
 let pendingBulk: boolean | null = null;
+let pendingOnlyGroup: SkillGroup | null = null;
+let selectedGroup: string | null = null;
 let query = '';
 let initialized = false;
 
@@ -361,6 +423,25 @@ const renderConflicts = (): void => {
 
 const renderNotice = (): void => {
   noticeRoot.replaceChildren();
+  if (pendingOnlyGroup) {
+    const group = pendingOnlyGroup;
+    const memberIds = new Set(group.skillIds);
+    const others = data ? data.skills.filter((skill) => !memberIds.has(skill.id)).length : 0;
+    const node = el('div', 'sk-notice', `仅启用「${group.name}」：将关闭其他 ${others} 个技能。`);
+    node.dataset.tone = 'warning';
+    node.setAttribute('role', 'status');
+    const actions = el('div', 'sk-notice-actions');
+    actions.append(
+      actionButton('确认', () => void applyOnlyGroup(), true),
+      actionButton('取消', () => {
+        pendingOnlyGroup = null;
+        render();
+      }),
+    );
+    node.append(actions);
+    noticeRoot.append(node);
+    return;
+  }
   if (pendingBulk !== null) {
     const count = data
       ? data.skills.filter((skill) => (pendingBulk ? skill.disabledPaths.length : skill.activePaths.length) > 0).length
@@ -399,6 +480,13 @@ const renderNotice = (): void => {
     noticeRoot.append(node);
     return;
   }
+  if (translationError) {
+    const node = el('div', 'sk-notice', translationError);
+    node.dataset.tone = 'error';
+    node.setAttribute('role', 'alert');
+    noticeRoot.append(node);
+    return;
+  }
   if (loading && !data) {
     const node = el('div', 'sk-notice', '正在读取技能…');
     node.dataset.tone = 'info';
@@ -421,6 +509,203 @@ const renderSummary = (): void => {
   if (data.root.error) parts.push('技能目录无法读取');
   summarySecondary.textContent = `${parts.join(' · ')}。估算不含内置和项目技能。`;
 };
+
+const translationEntry = (skill: SkillView): TranslationEntry | null => {
+  const entry = translations.entries[skill.id];
+  return entry && entry.hash === skill.contentHash ? entry : null;
+};
+
+const translatedCount = (): number => data?.skills.filter((skill) => translationEntry(skill)).length ?? 0;
+
+const displayName = (skill: SkillView): string => {
+  if (displayMode !== 'translated') return skill.name;
+  return translationEntry(skill)?.nameZh || skill.name;
+};
+
+const displayDescription = (skill: SkillView): string => {
+  if (displayMode !== 'translated') return skill.description;
+  const entry = translationEntry(skill);
+  return entry?.descriptionZh || skill.description;
+};
+
+const renderTranslationControls = (): void => {
+  translateButton.setAttribute('aria-pressed', displayMode === 'translated' ? 'true' : 'false');
+  originalButton.setAttribute('aria-pressed', displayMode === 'original' ? 'true' : 'false');
+  translateButton.disabled = translating;
+  const total = data?.skills.length ?? 0;
+  const translated = translatedCount();
+  if (translating) translationStatus.textContent = `翻译 ${translationProgress.done}/${translationProgress.total}…`;
+  else if (displayMode === 'translated') translationStatus.textContent = translated ? `${translated}/${total} 已翻译` : '点“翻译”生成中文';
+  else translationStatus.textContent = translated ? `${translated} 个有中文` : '';
+};
+
+const groupSkillIds = (group: SkillGroup): string[] =>
+  group.skillIds.filter((id) => data?.skills.some((skill) => skill.id === id));
+
+const groupState = (group: SkillGroup): string => {
+  const skills = groupSkillIds(group)
+    .map((id) => data?.skills.find((skill) => skill.id === id))
+    .filter((skill): skill is SkillView => Boolean(skill));
+  if (skills.length === 0) return '无技能';
+  if (skills.some((skill) => skill.state === 'conflict')) return '有冲突';
+  const enabled = skills.filter((skill) => skill.state === 'enabled').length;
+  if (enabled === skills.length) return '全开';
+  if (enabled === 0) return '全关';
+  return '部分';
+};
+
+const focusGroupChip = (id: string): void => {
+  const target = Array.from(groupsRoot.querySelectorAll<HTMLElement>('[data-group]')).find(
+    (node) => node.dataset.group === id,
+  );
+  target?.focus();
+};
+
+const renderGroups = (): void => {
+  groupsRoot.replaceChildren();
+  const total = data?.skills.length ?? 0;
+  const all = el('button', 'sk-chip', `全部 ${total}`);
+  all.type = 'button';
+  all.dataset.group = 'all';
+  all.setAttribute('aria-pressed', selectedGroup === null ? 'true' : 'false');
+  all.addEventListener('click', () => {
+    selectedGroup = null;
+    render();
+    focusGroupChip('all');
+  });
+  groupsRoot.append(all);
+  for (const group of SKILL_GROUPS) {
+    const count = groupSkillIds(group).length;
+    const chip = el('button', 'sk-chip', `${group.name} ${count}`);
+    chip.type = 'button';
+    chip.dataset.group = group.id;
+    chip.setAttribute('aria-pressed', selectedGroup === group.id ? 'true' : 'false');
+    chip.addEventListener('click', () => {
+      selectedGroup = group.id;
+      render();
+      focusGroupChip(group.id);
+    });
+    groupsRoot.append(chip);
+  }
+};
+
+const renderGroupBar = (): void => {
+  groupBarRoot.replaceChildren();
+  if (!data || !selectedGroup) return;
+  const current = data;
+  const group = SKILL_GROUPS.find((item) => item.id === selectedGroup);
+  if (!group) return;
+  const available = groupSkillIds(group);
+  const missing = group.skillIds.filter((id) => !available.includes(id));
+  const skills = available
+    .map((id) => current.skills.find((skill) => skill.id === id))
+    .filter((skill): skill is SkillView => Boolean(skill));
+  const conflict = skills.some((skill) => skill.state === 'conflict');
+  const blocked = rootBlocked() || conflict || available.length === 0;
+  const bar = el('div', 'sk-groupbar');
+  const text = el('div', 'sk-groupbar-text');
+  text.append(el('strong', '', group.name), el('span', 'sk-group-state', `${available.length} 个 · ${groupState(group)}`));
+  if (missing.length > 0) text.append(el('p', 'sk-group-warning', `缺失：${missing.join('、')}`));
+  const actions = el('div', 'sk-groupbar-actions');
+  actions.append(
+    actionButton('启用整组', () => void runGroup(group, true), false, blocked),
+    actionButton('关闭整组', () => void runGroup(group, false), false, blocked),
+  );
+  const only = actionButton('仅启用本组', () => requestOnlyGroup(group), false, blocked || missing.length > 0);
+  if (missing.length > 0) only.title = '分组里有缺失技能，先处理后再仅启用本组';
+  actions.append(only);
+  bar.append(text, actions);
+  groupBarRoot.append(bar);
+};
+
+const runGroup = async (group: SkillGroup, enabled: boolean): Promise<void> => {
+  if (!data || busy) return;
+  const ids = groupSkillIds(group);
+  if (ids.length === 0) return;
+  busy = `group:${group.id}:${enabled ? 'on' : 'off'}`;
+  pendingOnlyGroup = null;
+  pendingBulk = null;
+  notice = null;
+  render();
+  try {
+    data = parseResponse(await request('POST', '/skills/batch', {
+      enable: enabled ? ids : [],
+      disable: enabled ? [] : ids,
+    }));
+    notice = {
+      text: `已${enabled ? '启用' : '关闭'}「${group.name}」的 ${ids.length} 个技能。`,
+      tone: 'success',
+    };
+    void host.toast({ kind: 'success', message: `${enabled ? '已启用' : '已关闭'}「${group.name}」` }).catch(() => undefined);
+  } catch (error) {
+    notice = { text: describeError(error), tone: 'error' };
+    busy = null;
+    render();
+    void loadSkills(false, true);
+    return;
+  }
+  busy = null;
+  render();
+};
+
+const requestOnlyGroup = (group: SkillGroup): void => {
+  if (!data || busy) return;
+  const available = groupSkillIds(group);
+  const missing = group.skillIds.filter((id) => !available.includes(id));
+  if (available.length === 0 || missing.length > 0) return;
+  pendingOnlyGroup = group;
+  pendingBulk = null;
+  notice = null;
+  render();
+  noticeRoot.scrollIntoView({ block: 'nearest' });
+  noticeRoot.querySelector<HTMLButtonElement>('button')?.focus();
+};
+
+const applyOnlyGroup = async (): Promise<void> => {
+  if (!data || busy || !pendingOnlyGroup) return;
+  const group = pendingOnlyGroup;
+  pendingOnlyGroup = null;
+  const enable = groupSkillIds(group);
+  const missing = group.skillIds.filter((id) => !enable.includes(id));
+  if (enable.length === 0 || missing.length > 0) {
+    notice = { text: '分组里有缺失技能，未执行。', tone: 'error' };
+    render();
+    return;
+  }
+  const memberIds = new Set(group.skillIds);
+  const disable = data.skills.filter((skill) => !memberIds.has(skill.id)).map((skill) => skill.id);
+  busy = `group-only:${group.id}`;
+  notice = null;
+  render();
+  try {
+    data = parseResponse(await request('POST', '/skills/batch', { enable, disable }));
+    notice = {
+      text: `已仅启用「${group.name}」，关闭其他 ${disable.length} 个技能。`,
+      tone: 'success',
+    };
+    void host.toast({ kind: 'success', message: `已仅启用「${group.name}」` }).catch(() => undefined);
+  } catch (error) {
+    notice = { text: describeError(error), tone: 'error' };
+    busy = null;
+    render();
+    void loadSkills(false, true);
+    return;
+  }
+  busy = null;
+  render();
+};
+
+translateButton.addEventListener('click', () => {
+  translationPreferenceSet = true;
+  displayMode = 'translated';
+  render();
+  void translateMissing();
+});
+originalButton.addEventListener('click', () => {
+  translationPreferenceSet = true;
+  displayMode = 'original';
+  render();
+});
 
 const skillAction = (skill: SkillView): HTMLElement => {
   const holder = el('div', 'sk-skill-action');
@@ -476,16 +761,24 @@ const skillAction = (skill: SkillView): HTMLElement => {
   return holder;
 };
 
-const renderSkill = (skill: SkillView): HTMLElement => {
+const renderSkill = (skill: SkillView, step = 0): HTMLElement => {
   const row = el('article', 'sk-skill');
   row.dataset.state = skill.state;
   row.setAttribute('role', 'listitem');
   const main = el('div', 'sk-skill-main');
   const head = el('div', 'sk-skill-head');
-  head.append(el('strong', 'sk-name', skill.name), badge(stateText(skill), toneForState(skill)));
+  if (step > 0) {
+    const marker = el('span', 'sk-step', String(step));
+    marker.title = `第 ${step} 步`;
+    marker.setAttribute('aria-label', `第 ${step} 步`);
+    head.append(marker);
+  }
+  const translated = displayMode === 'translated' ? translationEntry(skill) : null;
+  head.append(el('strong', 'sk-name', translated?.nameZh || skill.name), badge(stateText(skill), toneForState(skill)));
   const meta = el('div', 'sk-meta');
+  if (translated) meta.append(el('span', 'sk-original-name', skill.name));
   meta.append(el('code', 'sk-id', skill.id));
-  const description = el('p', 'sk-desc', skill.description || '无 description，模型不会自动选用。');
+  const description = el('p', 'sk-desc', translated?.descriptionZh || skill.description || '无 description，模型不会自动选用。');
   main.append(head, meta, description);
   if (skill.warnings.length > 0) {
     const warning = el('p', 'sk-warn', skill.warnings.slice(0, 2).join(' · '));
@@ -498,29 +791,49 @@ const renderSkill = (skill: SkillView): HTMLElement => {
 const renderList = (): void => {
   listRoot.replaceChildren();
   if (!data) return;
-  const skills = data.skills.filter((skill) => {
+  const group = selectedGroup ? SKILL_GROUPS.find((item) => item.id === selectedGroup) : null;
+  const base = group
+    ? group.skillIds
+        .map((id) => data?.skills.find((skill) => skill.id === id))
+        .filter((skill): skill is SkillView => Boolean(skill))
+    : data.skills;
+  const skills = base.filter((skill) => {
     if (!query) return true;
-    const haystack = [skill.id, skill.name, skill.description, ...skill.warnings].join(' ').toLowerCase();
+    const entry = translationEntry(skill);
+    const haystack = [
+      skill.id,
+      skill.name,
+      skill.description,
+      entry?.nameZh ?? '',
+      entry?.descriptionZh ?? '',
+      ...skill.warnings,
+    ].join(' ').toLowerCase();
     return haystack.includes(query);
   });
   if (skills.length === 0) {
     const empty = el('div', 'sk-empty');
     empty.append(
-      el('h2', '', data.skills.length === 0 ? '没有发现技能' : '没有匹配的技能'),
+      el('h2', '', data.skills.length === 0 ? '没有发现技能' : group ? '这个分组没有可用技能' : '没有匹配的技能'),
       el('p', '', data.skills.length === 0
         ? '检查 ~/.config/opencode/skills 是否存在，或重新扫描。'
-        : '换一个搜索词。'),
+        : group ? '检查分组里的技能是否被移除。' : '换一个搜索词。'),
     );
     listRoot.append(empty);
     return;
   }
-  for (const skill of skills) listRoot.append(renderSkill(skill));
+  for (const skill of skills) {
+    const step = group && group.skillIds.length > 1 ? group.skillIds.indexOf(skill.id) + 1 : 0;
+    listRoot.append(renderSkill(skill, step));
+  }
 };
 
 const render = (): void => {
   app.setAttribute('aria-busy', loading ? 'true' : 'false');
   renderSummary();
+  renderTranslationControls();
   renderNotice();
+  renderGroups();
+  renderGroupBar();
   renderConflicts();
   renderList();
   refresh.update({ label: loading ? '读取中…' : '重新扫描', loading, disabled: loading || Boolean(busy) });
@@ -528,6 +841,7 @@ const render = (): void => {
   enableAll.update({ disabled: loading || Boolean(busy) || !data || blocked });
   disableAll.update({ disabled: loading || Boolean(busy) || !data || blocked });
 };
+
 
 const focusSkill = (id: string): void => {
   const target = Array.from(document.querySelectorAll<HTMLElement>('[data-skill-id]')).find(
@@ -552,10 +866,125 @@ const loadSkills = async (showLoading = false, silent = false): Promise<void> =>
   }
 };
 
+const saveTranslations = async (): Promise<void> => {
+  try {
+    translations = parseTranslationCache(await request('POST', '/translations', translations));
+    translationError = null;
+  } catch (error) {
+    translationError = describeError(error);
+  }
+};
+
+const translateMissing = async (): Promise<void> => {
+  if (!data || translating) return;
+  const pending = data.skills.filter((skill) => !translationEntry(skill));
+  if (pending.length === 0) {
+    notice = { text: '中文说明已是最新。', tone: 'success' };
+    render();
+    return;
+  }
+  translating = true;
+  translationError = null;
+  translationProgress = { done: 0, total: pending.length };
+  notice = null;
+  render();
+  let done = 0;
+  let failed = 0;
+  let aborted = false;
+  try {
+    for (let index = 0; index < pending.length; index += 4) {
+      const batch = pending.slice(index, index + 4);
+      let remaining = batch;
+      for (let attempt = 0; attempt < 2 && remaining.length > 0; attempt += 1) {
+        const generated = await host.generate({
+          prompt: buildTranslationPrompt(remaining.map((skill) => ({
+            id: skill.id,
+            name: skill.name,
+            description: skill.description,
+          }))),
+          system: TRANSLATION_SYSTEM,
+          maxOutputTokens: 2048,
+        });
+        const parsed = parseTranslationResponse(generated.text);
+        const accepted = new Set<string>();
+        for (const item of parsed) {
+          const skill = remaining.find((candidate) => candidate.id === item.id);
+          if (!skill) continue;
+          translations.entries[skill.id] = {
+            hash: skill.contentHash,
+            nameZh: item.nameZh,
+            descriptionZh: item.descriptionZh,
+            updatedAt: Date.now(),
+          };
+          accepted.add(skill.id);
+        }
+        remaining = remaining.filter((skill) => !accepted.has(skill.id));
+      }
+      failed += remaining.length;
+      done += batch.length - remaining.length;
+      translationProgress = { done, total: pending.length };
+      await saveTranslations();
+      render();
+    }
+  } catch (error) {
+    aborted = true;
+    translationError = describeError(error);
+    notice = { text: translationError, tone: 'error' };
+  } finally {
+    translating = false;
+    if (!aborted) {
+      if (translationError) {
+        notice = { text: `翻译完成，但缓存保存失败：${translationError}`, tone: 'warning' };
+      } else if (failed > 0) {
+        notice = { text: `已翻译 ${done} 个技能，${failed} 个失败；可再点“翻译”重试。`, tone: 'warning' };
+      } else {
+        notice = { text: `已翻译 ${done} 个技能。`, tone: 'success' };
+      }
+    }
+    render();
+  }
+};
+
+const loadAll = async (showLoading = false): Promise<void> => {
+  if (loading) return;
+  loading = true;
+  if (showLoading) render();
+  const [skillsResult, translationsResult] = await Promise.allSettled([
+    request('GET', '/skills'),
+    request('GET', '/translations'),
+  ]);
+  if (skillsResult.status === 'fulfilled') {
+    try {
+      data = parseResponse(skillsResult.value);
+      loadError = null;
+    } catch (error) {
+      loadError = describeError(error);
+    }
+  } else {
+    loadError = describeError(skillsResult.reason);
+  }
+  if (translationsResult.status === 'fulfilled') {
+    try {
+      translations = parseTranslationCache(translationsResult.value);
+      translationError = null;
+      if (!translationPreferenceSet && Object.keys(translations.entries).length > 0) {
+        displayMode = 'translated';
+      }
+    } catch (error) {
+      translationError = describeError(error);
+    }
+  } else {
+    translationError = describeError(translationsResult.reason);
+  }
+  loading = false;
+  render();
+};
+
 const toggleSkill = async (skill: SkillView, enabled: boolean): Promise<void> => {
   if (busy) return;
   busy = `toggle:${skill.id}`;
   pendingBulk = null;
+  pendingOnlyGroup = null;
   notice = null;
   render();
   try {
@@ -609,6 +1038,7 @@ const resolveConflict = async (conflict: ConflictView, keep: 'enabled' | 'disabl
 const requestBulk = (enabled: boolean): void => {
   if (!data || busy) return;
   pendingBulk = enabled;
+  pendingOnlyGroup = null;
   notice = null;
   render();
   noticeRoot.scrollIntoView({ block: 'nearest' });
@@ -619,6 +1049,7 @@ const applyBulk = async (): Promise<void> => {
   if (pendingBulk === null || busy) return;
   const enabled = pendingBulk;
   pendingBulk = null;
+  pendingOnlyGroup = null;
   busy = 'bulk';
   notice = null;
   render();
@@ -652,7 +1083,7 @@ host.onReady((context) => {
     return;
   }
   initialized = true;
-  void loadSkills(true);
+  void loadAll(true);
 });
 
 render();

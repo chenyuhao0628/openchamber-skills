@@ -1,9 +1,9 @@
 {
   "name": "openchamber-skills",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "OpenChamber 技能开关：按技能入口文档启停技能，并检查来源冲突。",
+  "description": "OpenChamber 技能开关：启停 OpenCode 技能、中文翻译和联动分组。",
   "openchamber": {
     "apiVersion": 1,
     "engines": {
@@ -21,7 +21,10 @@
         "runtime": "host",
         "permissions": {}
       }
-    }
+    },
+    "capabilities": [
+      "model"
+    ]
   },
   "scripts": {
     "build": "node scripts/build.mjs",

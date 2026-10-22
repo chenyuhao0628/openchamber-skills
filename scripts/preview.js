@@ -3,7 +3,51 @@ let dark = params.get('theme') === 'dark';
 let width = Number(params.get('width') || 400);
 let mode = params.get('state') || 'clean';
 let resolved = false;
-let states = { alpha: true, manual: true, beta: false, nodesc: true, delta: true };
+
+const root = '~/.config/opencode/skills';
+const pathFor = (id, file = 'SKILL.md') => `${root}/${id}/${file}`;
+
+const fixtures = [
+  { id: 'appkit-interop', name: 'AppKit Interop', description: 'SwiftUI/AppKit bridging, NSWindow, responder chain.', zhName: 'AppKit 互通', zhDescription: 'SwiftUI 与 AppKit 桥接、窗口和响应链。' },
+  { id: 'swiftui-patterns', name: 'SwiftUI Patterns', description: 'macOS SwiftUI scenes, windows, toolbars, inspectors.', zhName: 'SwiftUI 模式', zhDescription: 'macOS SwiftUI 场景、窗口、工具栏和检查器。' },
+  { id: 'window-management', name: 'Window Management', description: 'macOS windows, panels, placement and restoration.', zhName: '窗口管理', zhDescription: 'macOS 窗口、面板、停靠和恢复。' },
+  { id: 'liquid-glass', name: 'Liquid Glass', description: 'macOS 26 Liquid Glass surfaces and glass controls.', zhName: 'Liquid Glass', zhDescription: 'macOS 26 Liquid Glass 界面与玻璃控件。' },
+  { id: 'view-refactor', name: 'View Refactor', description: 'Split large SwiftUI views and stabilize scene state.', zhName: '视图重构', zhDescription: '拆分大型 SwiftUI 视图并稳定场景状态。' },
+  { id: 'build-run-debug', name: 'Build Run Debug', description: 'Xcode/Swift build, launch, and runtime failures.', zhName: '构建与调试', zhDescription: 'Xcode/Swift 构建、启动和运行时故障。' },
+  { id: 'test-triage', name: 'Test Triage', description: 'Narrow macOS test failures and separate setup issues.', zhName: '测试排查', zhDescription: '缩小 macOS 测试失败范围并区分环境问题。' },
+  { id: 'swiftpm-macos', name: 'SwiftPM macOS', description: 'SwiftPM macOS packages and executables.', zhName: 'SwiftPM', zhDescription: 'SwiftPM macOS 包和可执行文件。' },
+  { id: 'signing-entitlements', name: 'Signing Entitlements', description: 'macOS signing, entitlements, and Gatekeeper.', zhName: '签名与权限', zhDescription: 'macOS 签名、entitlements 和 Gatekeeper。' },
+  { id: 'packaging-notarization', name: 'Packaging Notarization', description: 'Archiving, notarization, and distribution failures.', zhName: '打包与公证', zhDescription: '归档、公证和分发失败排查。' },
+  { id: 'telemetry', name: 'Telemetry', description: 'Lightweight macOS runtime logging and events.', zhName: '遥测', zhDescription: '轻量 macOS 运行日志与事件。' },
+  { id: 'reverse-engineering-unpacking', name: 'RE Unpacking', description: 'PE/.NET, APK, and native ELF/SO triage and unpacking.', zhName: '逆向解包', zhDescription: 'PE/.NET、APK 和原生二进制的分诊与解包。' },
+  { id: 'kuna-decompiler', name: 'Kuna Decompiler', description: 'Recover searchable C and assembly with the Kuna CLI.', zhName: 'Kuna 反编译', zhDescription: '用 Kuna CLI 恢复 C/汇编并验证发现。' },
+  { id: 'reverse-engineer-anything', name: 'REA', description: 'Reverse engineer native, managed, Electron and firmware targets.', zhName: 'REA 逆向', zhDescription: '原生、托管、Electron 和固件目标逆向。' },
+  { id: 'cloudflare', name: 'Cloudflare', description: 'Choose Cloudflare products and architecture.', zhName: 'Cloudflare', zhDescription: '选择 Cloudflare 产品和架构。' },
+  { id: 'workers-best-practices', name: 'Workers Best Practices', description: 'Production Workers configuration and code practices.', zhName: 'Workers 最佳实践', zhDescription: '生产 Workers 的配置与代码实践。' },
+  { id: 'wrangler', name: 'Wrangler', description: 'Wrangler CLI dev, deploy, and resources.', zhName: 'Wrangler', zhDescription: 'Wrangler CLI 开发、部署和资源管理。' },
+  { id: 'yichen-jianying-edit', name: 'Jianying Edit', description: 'Headless editable Jianying drafts and export.', zhName: '剪映编辑', zhDescription: '无界面生成可编辑的剪映草稿。' },
+  { id: 'browser-skill', name: 'Browser Skill', description: 'Automate the logged-in Chromium browser.', zhName: '浏览器自动化', zhDescription: '操作用户已登录的 Chromium 浏览器。' },
+];
+
+const translations = {
+  version: 1,
+  locale: 'zh-CN',
+  entries: Object.fromEntries(
+    fixtures.map((item) => [
+      item.id,
+      { hash: `${item.id}-hash`, nameZh: item.zhName, descriptionZh: item.zhDescription, updatedAt: 1 },
+    ]),
+  ),
+};
+translations.entries.delta = { hash: 'delta-hash', nameZh: '德尔塔', descriptionZh: '启用和停用入口同时存在的示例技能。', updatedAt: 1 };
+
+const initialStates = () => {
+  const states = Object.fromEntries(fixtures.map((item) => [item.id, true]));
+  states['view-refactor'] = false;
+  states.delta = true;
+  return states;
+};
+let states = initialStates();
 
 const frame = document.querySelector('iframe');
 const audit = document.querySelector('#audit');
@@ -11,9 +55,6 @@ const buttons = {
   clean: document.querySelector('#clean'),
   conflict: document.querySelector('#conflict'),
 };
-
-const root = '~/.config/opencode/skills';
-const pathFor = (id, file = 'SKILL.md') => `${root}/${id}/${file}`;
 
 const tokens = (isDark) => ({
   background: isDark ? '#20201e' : '#faf9f7',
@@ -56,40 +97,48 @@ const conflict = (kind, skillId, message, activePath, disabledPath, blocking) =>
 
 const buildData = () => {
   const skills = [];
-  const add = (id, name, description, active, autoInvokeOff = false, extraConflicts = []) => {
-    const activePath = active ? pathFor(id) : null;
-    const disabledPath = active ? null : pathFor(id, 'SKILL.md.disabled');
-    const conflicts = [...extraConflicts];
+  for (const item of fixtures) {
+    const active = Boolean(states[item.id]);
+    const activePath = active ? pathFor(item.id) : null;
+    const disabledPath = active ? null : pathFor(item.id, 'SKILL.md.disabled');
+    const autoInvokeOff = item.id === 'browser-skill';
+    const conflicts = [];
     if (active && autoInvokeOff) {
-      conflicts.push(conflict('manual', id, '入口已启用，但标记为仅手动调用；模型看不到它。', activePath, null, false));
+      conflicts.push(conflict('manual', item.id, '入口已启用，但标记为仅手动调用；模型看不到它。', activePath, null, false));
     }
-    if (active && !autoInvokeOff && !description) {
-      conflicts.push(conflict('no-description', id, '入口已启用，但没有 description；模型不会自动选用。', activePath, null, false));
-    }
-    const advertised = Boolean(active && !autoInvokeOff && description);
     skills.push({
-      id,
-      name,
-      description,
+      id: item.id,
+      name: item.name,
+      description: item.description,
       state: active ? 'enabled' : 'disabled',
-      advertised,
+      advertised: Boolean(active && !autoInvokeOff),
       autoInvokeOff,
       activePaths: activePath ? [activePath] : [],
       disabledPaths: disabledPath ? [disabledPath] : [],
       conflicts,
-      warnings: [...new Set(conflicts.filter((item) => !item.blocking).map((item) => item.message))],
-      estimatedTokens: advertised ? Math.max(1, Math.ceil((name.length + id.length + description.length) / 4) + 8) : 0,
+      warnings: conflicts.map((item) => item.message),
+      estimatedTokens: active && !autoInvokeOff ? 40 : 0,
+      contentHash: `${item.id}-hash`,
     });
-  };
-
-  add('alpha', 'Alpha', 'Fixture skill for the normal enabled state.', states.alpha);
-  add('manual', 'Manual only', 'Fixture skill hidden by autoinvoke.', states.manual, true);
-  add('beta', 'Beta', 'Fixture skill currently turned off.', states.beta);
-  add('nodesc', 'No description', '', states.nodesc);
+  }
 
   if (mode === 'conflict') {
     if (resolved) {
-      add('delta', 'Delta', 'Conflict resolved for this preview.', states.delta);
+      const active = Boolean(states.delta);
+      skills.push({
+        id: 'delta',
+        name: 'Delta',
+        description: 'Conflict resolved for this preview.',
+        state: active ? 'enabled' : 'disabled',
+        advertised: active,
+        autoInvokeOff: false,
+        activePaths: active ? [pathFor('delta')] : [],
+        disabledPaths: active ? [] : [pathFor('delta', 'SKILL.md.disabled')],
+        conflicts: [],
+        warnings: [],
+        estimatedTokens: active ? 30 : 0,
+        contentHash: 'delta-hash',
+      });
     } else {
       skills.push({
         id: 'delta',
@@ -105,6 +154,7 @@ const buildData = () => {
         ],
         warnings: [],
         estimatedTokens: 30,
+        contentHash: 'delta-hash',
       });
     }
   }
@@ -165,6 +215,14 @@ window.addEventListener('message', (event) => {
     reply(event.source, message.id, 200, data);
     return;
   }
+  if (method === 'GET' && path === '/translations') {
+    reply(event.source, message.id, 200, translations);
+    return;
+  }
+  if (method === 'POST' && path === '/translations') {
+    reply(event.source, message.id, 200, translations);
+    return;
+  }
   if (method === 'POST' && path === '/skills/toggle') {
     const input = body ? JSON.parse(body) : {};
     const skill = data.skills.find((item) => item.id === input.id);
@@ -199,6 +257,16 @@ window.addEventListener('message', (event) => {
     reply(event.source, message.id, 200, { ...buildData(), changed: ids });
     return;
   }
+  if (method === 'POST' && path === '/skills/batch') {
+    const input = body ? JSON.parse(body) : {};
+    const enable = Array.isArray(input.enable) ? input.enable : [];
+    const disable = Array.isArray(input.disable) ? input.disable : [];
+    for (const id of enable) states[id] = true;
+    for (const id of disable) states[id] = false;
+    resolved = true;
+    reply(event.source, message.id, 200, { ...buildData(), changed: [...new Set([...enable, ...disable])] });
+    return;
+  }
   reply(event.source, message.id, 404, { error: 'not-found', code: 'not-found' });
 });
 
@@ -207,7 +275,7 @@ const paint = () => {
   document.documentElement.style.setProperty('--width', `${width}px`);
   buttons.clean.setAttribute('aria-pressed', mode === 'clean' ? 'true' : 'false');
   buttons.conflict.setAttribute('aria-pressed', mode === 'conflict' ? 'true' : 'false');
-  audit.textContent = `mode=${mode} · states=${JSON.stringify(states)}`;
+  audit.textContent = `mode=${mode} · ${Object.values(states).filter(Boolean).length} 个启用`;
 };
 const show = () => {
   frame.src = `/panel/index.html?state=${encodeURIComponent(mode)}&t=${Date.now()}`;
@@ -226,14 +294,18 @@ document.querySelector('#narrow').onclick = () => {
 buttons.clean.onclick = () => {
   mode = 'clean';
   resolved = false;
-  states = { alpha: true, manual: true, beta: false, nodesc: true, delta: true };
+  states = initialStates();
   show();
 };
 buttons.conflict.onclick = () => {
   mode = 'conflict';
   resolved = false;
-  states = { alpha: true, manual: true, beta: false, nodesc: true, delta: true };
+  states = initialStates();
   show();
+};
+document.querySelector('#group').onclick = () => {
+  const chip = frame.contentDocument?.querySelector('[data-group="reverse"]');
+  chip?.click();
 };
 document.querySelector('#reload').onclick = show;
 

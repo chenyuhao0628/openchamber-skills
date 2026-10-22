@@ -2,11 +2,13 @@ import http from 'node:http';
 import os from 'node:os';
 import {
   SkillsError,
+  batchSetEnabled,
   bulkSetEnabled,
   resolveBoth,
   scanSkills,
   setSkillEnabled,
 } from '../core/skills.ts';
+import { TranslationError, readTranslations, writeTranslations } from '../core/translations.ts';
 
 const port = Number(process.env.OPENCHAMBER_SERVICE_PORT);
 const token = process.env.OPENCHAMBER_SERVICE_TOKEN ?? '';
@@ -33,7 +35,7 @@ const readBody = (req: http.IncomingMessage): Promise<Record<string, unknown>> =
     req.on('data', (chunk: Buffer) => {
       if (failed) return;
       size += chunk.length;
-      if (size > 64 * 1024) {
+      if (size > 256 * 1024) {
         failed = true;
         chunks.length = 0;
         reject(new SkillsError('too-large', 413, '提交内容过大'));
@@ -76,6 +78,15 @@ const booleanField = (body: Record<string, unknown>, key: string): boolean => {
   return value;
 };
 
+const stringArrayField = (body: Record<string, unknown>, key: string): string[] => {
+  const value = body[key];
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || item.length === 0 || item.length > 128)) {
+    throw new SkillsError('invalid-request', 400, `${key} 必须是技能 ID 数组`);
+  }
+  if (value.length > 200) throw new SkillsError('invalid-request', 400, `${key} 条目过多`);
+  return value as string[];
+};
+
 const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
   if (req.headers.authorization !== `Bearer ${token}`) {
     throw new SkillsError('unauthorized', 401, 'unauthorized');
@@ -102,6 +113,22 @@ const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Prom
     json(res, 200, await exclusive(() => bulkSetEnabled(HOME, enabled)));
     return;
   }
+  if (url.pathname === '/skills/batch' && req.method === 'POST') {
+    const body = await readBody(req);
+    const enable = stringArrayField(body, 'enable');
+    const disable = stringArrayField(body, 'disable');
+    json(res, 200, await exclusive(() => batchSetEnabled(HOME, enable, disable)));
+    return;
+  }
+  if (url.pathname === '/translations' && req.method === 'GET') {
+    json(res, 200, await exclusive(() => readTranslations(HOME)));
+    return;
+  }
+  if (url.pathname === '/translations' && req.method === 'POST') {
+    const body = await readBody(req);
+    json(res, 200, await exclusive(() => writeTranslations(HOME, body)));
+    return;
+  }
   if (url.pathname === '/skills/resolve' && req.method === 'POST') {
     const body = await readBody(req);
     const entryPath = stringField(body, 'path', 4096);
@@ -116,11 +143,11 @@ const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Prom
 const server = http.createServer((req, res) => {
   void handle(req, res).catch((error: unknown) => {
     if (res.headersSent || res.destroyed) return;
-    if (error instanceof SkillsError) {
+    if (error instanceof SkillsError || error instanceof TranslationError) {
       json(res, error.status, {
         error: error.message,
         code: error.code,
-        ...(error.conflicts ? { conflicts: error.conflicts } : {}),
+        ...(error instanceof SkillsError && error.conflicts ? { conflicts: error.conflicts } : {}),
       });
       return;
     }
