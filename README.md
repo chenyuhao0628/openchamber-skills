@@ -1,4 +1,40 @@
-# 技能开关 · openchamber-skills
+# openchamber-skills
+
+English | [简体中文](#简体中文)
+
+## English
+
+**Skills Manager** enables or disables OpenCode global skills by renaming their entry files, without editing skill bodies. It also checks entry conflicts, translates names and descriptions to Chinese on demand, and offers preset groups for batch toggling.
+
+### Highlights
+
+- Toggle `SKILL.md` ↔ `SKILL.md.disabled` and flat `<id>.md` ↔ `<id>.md.disabled`.
+- Conflict detection for duplicate entries, unreadable files and malformed frontmatter.
+- Optional Chinese translation of names and descriptions using the host's small model; cached with `0600` permissions.
+- Local service on `127.0.0.1` with Bearer-token checks; only manages `~/.config/opencode/skills`.
+- Preset groups for batch toggling; disabling the extension does not re-enable skills.
+
+### Screenshot
+
+<img src="docs/screenshots/panel.jpg" alt="Skills Manager panel" width="420">
+
+*Synthetic preview with sample skills. No real skill files are read or changed.*
+
+### Install
+
+In OpenChamber, open **Settings → Extensions → Add extension** and paste:
+
+```text
+https://github.com/chenyuhao0628/openchamber-skills
+```
+
+Requires OpenChamber **2.4.0 or newer**. The `model` capability is used only for the optional translation action.
+
+> Click **Enable all** before disabling or uninstalling the extension. The panel UI is currently Chinese. The full Chinese documentation is below.
+
+---
+
+## 简体中文
 
 当前版本 **0.2.1**，核对日期 **2026-10-23**。只管理 OpenCode 全局技能目录 `~/.config/opencode/skills`：按入口文档启停、中文翻译、按联动分组批量开关，并检查入口冲突。不改写技能正文，不新增技能，不碰其他 agent 的技能目录。
 
@@ -133,3 +169,7 @@ npm run preview
 | `src/shared/types.ts` | 面板与服务的数据契约 |
 | `tests/` | 扫描/冲突/批量、HTTP、缓存、分组和翻译解析 |
 | `ui/native.css` | 打包时内联的宿主基础样式 |
+
+## License
+
+MIT. See [LICENSE](LICENSE).
