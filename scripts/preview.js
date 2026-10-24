@@ -41,6 +41,16 @@ const translations = {
 };
 translations.entries.delta = { hash: 'delta-hash', nameZh: '德尔塔', descriptionZh: '启用和停用入口同时存在的示例技能。', updatedAt: 1 };
 
+const defaultGroups = [
+  { id: 'macos-ui', name: 'macOS UI', skillIds: ['appkit-interop', 'swiftui-patterns', 'window-management', 'liquid-glass', 'view-refactor'] },
+  { id: 'macos-build', name: 'macOS 构建', skillIds: ['build-run-debug', 'test-triage', 'swiftpm-macos', 'signing-entitlements', 'packaging-notarization', 'telemetry'] },
+  { id: 'reverse', name: '逆向工程', skillIds: ['reverse-engineering-unpacking', 'kuna-decompiler', 'reverse-engineer-anything'] },
+  { id: 'cloudflare', name: 'Cloudflare', skillIds: ['cloudflare', 'workers-best-practices', 'wrangler'] },
+  { id: 'video', name: '视频', skillIds: ['yichen-jianying-edit'] },
+  { id: 'browser', name: '浏览器', skillIds: ['browser-skill'] },
+];
+let groups = defaultGroups.map((group) => ({ ...group, skillIds: [...group.skillIds] }));
+
 const initialStates = () => {
   const states = Object.fromEntries(fixtures.map((item) => [item.id, true]));
   states['view-refactor'] = false;
@@ -223,6 +233,20 @@ window.addEventListener('message', (event) => {
     reply(event.source, message.id, 200, translations);
     return;
   }
+  if (method === 'GET' && path === '/groups') {
+    reply(event.source, message.id, 200, { version: 1, groups });
+    return;
+  }
+  if (method === 'POST' && path === '/groups') {
+    const input = body ? JSON.parse(body) : {};
+    if (!input || input.version !== 1 || !Array.isArray(input.groups)) {
+      reply(event.source, message.id, 400, { error: '分组配置格式不正确。', code: 'invalid-groups' });
+      return;
+    }
+    groups = input.groups;
+    reply(event.source, message.id, 200, { version: 1, groups });
+    return;
+  }
   if (method === 'POST' && path === '/skills/toggle') {
     const input = body ? JSON.parse(body) : {};
     const skill = data.skills.find((item) => item.id === input.id);
@@ -295,17 +319,39 @@ buttons.clean.onclick = () => {
   mode = 'clean';
   resolved = false;
   states = initialStates();
+  groups = defaultGroups.map((group) => ({ ...group, skillIds: [...group.skillIds] }));
   show();
 };
 buttons.conflict.onclick = () => {
   mode = 'conflict';
   resolved = false;
   states = initialStates();
+  groups = defaultGroups.map((group) => ({ ...group, skillIds: [...group.skillIds] }));
   show();
 };
 document.querySelector('#group').onclick = () => {
   const chip = frame.contentDocument?.querySelector('[data-group="reverse"]');
   chip?.click();
+};
+document.querySelector('#edit-groups').onclick = () => {
+  const button = frame.contentDocument?.querySelector('.sk-groups-edit');
+  button?.click();
+};
+document.querySelector('#save-group').onclick = async () => {
+  const doc = frame.contentDocument;
+  doc?.querySelector('.sk-groups-edit')?.click();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  const input = doc?.querySelector('.sk-group-name');
+  const save = doc ? [...doc.querySelectorAll('button')].find((button) => button.textContent === '保存更改') : null;
+  if (!input || !save) {
+    audit.textContent = '保存测试失败：找不到编辑器控件';
+    return;
+  }
+  input.value = 'macOS UI 改';
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  save.click();
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  audit.textContent = `保存测试：${groups.map((group) => group.name).join(' / ')}`;
 };
 document.querySelector('#reload').onclick = show;
 

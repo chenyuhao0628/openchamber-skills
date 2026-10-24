@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -100,6 +100,7 @@ test('skills service enforces auth and checks entry conflicts', async (t) => {
   await t.test('requires the host bearer token', async () => {
     assert.equal((await call('/health', 'GET', undefined, false)).status, 401);
     assert.equal((await call('/skills', 'GET', undefined, false)).status, 401);
+    assert.equal((await call('/groups', 'GET', undefined, false)).status, 401);
   });
 
   await t.test('lists only the OpenCode directory', async () => {
@@ -165,6 +166,43 @@ test('skills service enforces auth and checks entry conflicts', async (t) => {
     const cacheFile = path.join(fixture, '.config/openchamber/skills-manager/translations.json');
     const cacheStat = await stat(cacheFile);
     assert.equal(cacheStat.mode & 0o777, 0o600);
+  });
+
+  await t.test('stores editable groups privately', async () => {
+    const initial = await call('/groups');
+    assert.equal(initial.status, 200);
+    assert.equal((initial.data.groups as unknown[]).length, 6);
+
+    const saved = await call('/groups', 'POST', {
+      version: 1,
+      groups: [{ id: 'custom-daily', name: '日常开发', skillIds: ['alpha', 'beta'] }],
+    });
+    assert.equal(saved.status, 200);
+    assert.deepEqual(
+      (saved.data.groups as Array<{ id: string; name: string }>).map((group) => group.name),
+      ['日常开发'],
+    );
+    const groupsFile = path.join(fixture, '.config/openchamber/skills-manager/groups.json');
+    assert.equal((await stat(groupsFile)).mode & 0o777, 0o600);
+    assert.equal(((await call('/groups')).data.groups as unknown[]).length, 1);
+  });
+
+  await t.test('rejects invalid groups and keeps a corrupt file untouched', async () => {
+    const groupsFile = path.join(fixture, '.config/openchamber/skills-manager/groups.json');
+    const before = await readFile(groupsFile, 'utf8');
+    const invalid = await call('/groups', 'POST', {
+      version: 1,
+      groups: [{ id: 'all', name: '全部', skillIds: ['alpha'] }],
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal(invalid.data.code, 'invalid-groups');
+    assert.equal(await readFile(groupsFile, 'utf8'), before);
+
+    await writeFile(groupsFile, '{broken');
+    const corrupt = await call('/groups');
+    assert.equal(corrupt.status, 500);
+    assert.equal(corrupt.data.code, 'invalid-groups');
+    assert.equal(await readFile(groupsFile, 'utf8'), '{broken');
   });
 
   await t.test('reports both-file conflicts and resolves them explicitly', async () => {

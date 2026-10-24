@@ -671,6 +671,181 @@ var writeTranslations = async (home, value) => {
   }
 };
 
+// src/core/groups.ts
+import fs3 from "node:fs/promises";
+import path3 from "node:path";
+import { randomUUID as randomUUID3 } from "node:crypto";
+
+// src/shared/groups.ts
+var GROUP_LIMIT = 50;
+var GROUP_NAME_MAX = 40;
+var GROUP_MEMBER_LIMIT = 200;
+var GROUP_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+var RESERVED_GROUP_IDS = /* @__PURE__ */ new Set(["all", "new"]);
+var GroupFileError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "GroupFileError";
+  }
+};
+var DEFAULT_SKILL_GROUPS = [
+  {
+    id: "macos-ui",
+    name: "macOS UI",
+    skillIds: [
+      "appkit-interop",
+      "swiftui-patterns",
+      "window-management",
+      "liquid-glass",
+      "view-refactor"
+    ]
+  },
+  {
+    id: "macos-build",
+    name: "macOS \u6784\u5EFA",
+    skillIds: [
+      "build-run-debug",
+      "test-triage",
+      "swiftpm-macos",
+      "signing-entitlements",
+      "packaging-notarization",
+      "telemetry"
+    ]
+  },
+  {
+    id: "reverse",
+    name: "\u9006\u5411\u5DE5\u7A0B",
+    skillIds: [
+      "reverse-engineering-unpacking",
+      "kuna-decompiler",
+      "reverse-engineer-anything"
+    ]
+  },
+  {
+    id: "cloudflare",
+    name: "Cloudflare",
+    skillIds: ["cloudflare", "workers-best-practices", "wrangler"]
+  },
+  {
+    id: "video",
+    name: "\u89C6\u9891",
+    skillIds: ["yichen-jianying-edit"]
+  },
+  {
+    id: "browser",
+    name: "\u6D4F\u89C8\u5668",
+    skillIds: ["browser-skill"]
+  }
+];
+var cloneDefaultGroups = () => DEFAULT_SKILL_GROUPS.map((group) => ({ ...group, skillIds: [...group.skillIds] }));
+var normalizeGroupsFile = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new GroupFileError("\u5206\u7EC4\u914D\u7F6E\u683C\u5F0F\u4E0D\u6B63\u786E");
+  }
+  const record = value;
+  if (record.version !== 1) throw new GroupFileError("\u5206\u7EC4\u914D\u7F6E\u7248\u672C\u4E0D\u53D7\u652F\u6301");
+  if (!Array.isArray(record.groups)) throw new GroupFileError("\u5206\u7EC4\u5217\u8868\u683C\u5F0F\u4E0D\u6B63\u786E");
+  if (record.groups.length > GROUP_LIMIT) throw new GroupFileError(`\u5206\u7EC4\u4E0D\u80FD\u8D85\u8FC7 ${GROUP_LIMIT} \u4E2A`);
+  const groups = [];
+  const groupIds = /* @__PURE__ */ new Set();
+  const names = /* @__PURE__ */ new Set();
+  for (const [index, item] of record.groups.entries()) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new GroupFileError(`\u7B2C ${index + 1} \u4E2A\u5206\u7EC4\u683C\u5F0F\u4E0D\u6B63\u786E`);
+    }
+    const group = item;
+    if (typeof group.id !== "string" || !GROUP_ID_PATTERN.test(group.id) || RESERVED_GROUP_IDS.has(group.id)) {
+      throw new GroupFileError(`\u7B2C ${index + 1} \u4E2A\u5206\u7EC4\u7684 ID \u65E0\u6548`);
+    }
+    if (groupIds.has(group.id)) throw new GroupFileError(`\u5206\u7EC4 ID \u91CD\u590D\uFF1A${group.id}`);
+    const name = typeof group.name === "string" ? group.name.trim() : "";
+    if (!name || name.length > GROUP_NAME_MAX || /[\u0000-\u001f\u007f]/.test(name)) {
+      throw new GroupFileError(`\u7B2C ${index + 1} \u4E2A\u5206\u7EC4\u540D\u79F0\u9700\u4E3A 1-${GROUP_NAME_MAX} \u4E2A\u5B57\u7B26`);
+    }
+    const nameKey = name.toLowerCase();
+    if (names.has(nameKey)) throw new GroupFileError(`\u5206\u7EC4\u540D\u79F0\u91CD\u590D\uFF1A${name}`);
+    if (!Array.isArray(group.skillIds)) throw new GroupFileError(`\u5206\u7EC4\u300C${name}\u300D\u7684\u6210\u5458\u683C\u5F0F\u4E0D\u6B63\u786E`);
+    if (group.skillIds.length > GROUP_MEMBER_LIMIT) {
+      throw new GroupFileError(`\u5206\u7EC4\u300C${name}\u300D\u7684\u6210\u5458\u4E0D\u80FD\u8D85\u8FC7 ${GROUP_MEMBER_LIMIT} \u4E2A`);
+    }
+    const skillIds = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const skillId of group.skillIds) {
+      if (typeof skillId !== "string" || !skillId || skillId.length > 128) {
+        throw new GroupFileError(`\u5206\u7EC4\u300C${name}\u300D\u542B\u65E0\u6548\u7684\u6280\u80FD ID`);
+      }
+      if (seen.has(skillId)) continue;
+      seen.add(skillId);
+      skillIds.push(skillId);
+    }
+    groupIds.add(group.id);
+    names.add(nameKey);
+    groups.push({ id: group.id, name, skillIds });
+  }
+  return { version: 1, groups };
+};
+
+// src/core/groups.ts
+var DATA_DIR2 = [".config", "openchamber", "skills-manager"];
+var GROUPS_FILE = "groups.json";
+var GroupError = class extends Error {
+  code;
+  status;
+  constructor(code, status, message) {
+    super(message);
+    this.name = "GroupError";
+    this.code = code;
+    this.status = status;
+  }
+};
+var defaults = () => ({ version: 1, groups: cloneDefaultGroups() });
+var groupsFile = (home) => path3.join(home, ...DATA_DIR2, GROUPS_FILE);
+var readGroups = async (home) => {
+  let raw;
+  try {
+    raw = await fs3.readFile(groupsFile(home), "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return defaults();
+    throw new GroupError("read-error", 500, "\u65E0\u6CD5\u8BFB\u53D6\u5206\u7EC4\u914D\u7F6E\uFF0C\u8BF7\u68C0\u67E5\u6587\u4EF6\u6743\u9650\u3002");
+  }
+  try {
+    return normalizeGroupsFile(JSON.parse(raw));
+  } catch {
+    throw new GroupError("invalid-groups", 500, "\u5206\u7EC4\u914D\u7F6E\u6587\u4EF6\u635F\u574F\uFF1B\u539F\u6587\u4EF6\u672A\u4FEE\u6539\uFF08~/.config/openchamber/skills-manager/groups.json\uFF09\u3002");
+  }
+};
+var writeGroups = async (home, value) => {
+  let normalized;
+  try {
+    normalized = normalizeGroupsFile(value);
+  } catch (error) {
+    if (error instanceof GroupFileError) {
+      throw new GroupError("invalid-groups", 400, error.message);
+    }
+    throw new GroupError("invalid-groups", 400, "\u5206\u7EC4\u914D\u7F6E\u683C\u5F0F\u4E0D\u6B63\u786E\u3002");
+  }
+  const dir = path3.join(home, ...DATA_DIR2);
+  const file = groupsFile(home);
+  const temporary = `${file}.${randomUUID3()}.tmp`;
+  try {
+    await fs3.mkdir(dir, { recursive: true, mode: 448 });
+    await fs3.writeFile(temporary, `${JSON.stringify(normalized, null, 2)}
+`, {
+      encoding: "utf8",
+      mode: 384
+    });
+    await fs3.rename(temporary, file);
+    return await readGroups(home);
+  } catch (error) {
+    try {
+      await fs3.unlink(temporary);
+    } catch {
+    }
+    if (error instanceof GroupError) throw error;
+    throw new GroupError("write-error", 500, "\u4FDD\u5B58\u5206\u7EC4\u914D\u7F6E\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u76EE\u5F55\u6743\u9650\u3002");
+  }
+};
+
 // src/service/main.ts
 var port = Number(process.env.OPENCHAMBER_SERVICE_PORT);
 var token = process.env.OPENCHAMBER_SERVICE_TOKEN ?? "";
@@ -773,6 +948,15 @@ var handle = async (req, res) => {
     json(res, 200, await exclusive(() => batchSetEnabled(HOME, enable, disable)));
     return;
   }
+  if (url.pathname === "/groups" && req.method === "GET") {
+    json(res, 200, await exclusive(() => readGroups(HOME)));
+    return;
+  }
+  if (url.pathname === "/groups" && req.method === "POST") {
+    const body = await readBody(req);
+    json(res, 200, await exclusive(() => writeGroups(HOME, body)));
+    return;
+  }
   if (url.pathname === "/translations" && req.method === "GET") {
     json(res, 200, await exclusive(() => readTranslations(HOME)));
     return;
@@ -795,7 +979,7 @@ var handle = async (req, res) => {
 var server = http.createServer((req, res) => {
   void handle(req, res).catch((error) => {
     if (res.headersSent || res.destroyed) return;
-    if (error instanceof SkillsError || error instanceof TranslationError) {
+    if (error instanceof SkillsError || error instanceof TranslationError || error instanceof GroupError) {
       json(res, error.status, {
         error: error.message,
         code: error.code,

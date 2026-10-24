@@ -11,7 +11,13 @@ import type {
   TranslationCache,
   TranslationEntry,
 } from '../shared/types.ts';
-import { SKILL_GROUPS, type SkillGroup } from '../shared/groups.ts';
+import {
+  DEFAULT_SKILL_GROUPS,
+  GROUP_NAME_MAX,
+  cloneDefaultGroups,
+  normalizeGroupsFile,
+  type SkillGroup,
+} from '../shared/groups.ts';
 import { TRANSLATION_SYSTEM, buildTranslationPrompt, parseTranslationResponse } from './translate.ts';
 import css from './style.css';
 import native from '../../ui/native.css';
@@ -33,6 +39,7 @@ const el = <K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text?
 type Tone = 'info' | 'success' | 'warning' | 'error';
 type NoticeAction = { label: string; onClick: () => void; primary?: boolean };
 type Notice = { text: string; tone: Tone; actions?: NoticeAction[] };
+type GroupDraft = { id: string | null; name: string; members: string[] };
 
 class ServiceError extends Error {
   readonly code: string | null;
@@ -172,6 +179,14 @@ const parseTranslationCache = (value: unknown): TranslationCache => {
   return { version: 1, locale: 'zh-CN', entries };
 };
 
+const parseGroups = (value: unknown): SkillGroup[] => {
+  try {
+    return normalizeGroupsFile(value).groups;
+  } catch (error) {
+    throw new ServiceError(error instanceof Error ? error.message : '分组配置格式不正确。', 'parse', []);
+  }
+};
+
 const request = async (method: 'GET' | 'POST', path: string, body?: unknown): Promise<unknown> => {
   const response = await host.serviceRequest({
     method,
@@ -210,6 +225,11 @@ const describeError = (error: unknown): string => {
   return error instanceof Error ? error.message : '操作失败，请重试。';
 };
 
+const describeGroupsError = (error: unknown): string =>
+  error instanceof ServiceError && error.code === 'not-found'
+    ? '本地服务版本过旧，请在扩展设置中禁用再启用“技能开关”。'
+    : describeError(error);
+
 const app = el('main', 'ext sk');
 app.setAttribute('aria-label', '技能开关');
 const header = el('header', 'sk-header');
@@ -220,7 +240,10 @@ const refresh = mountButton(actionRoot, {
   label: '重新扫描',
   variant: 'outline',
   size: 'sm',
-  onClick: () => void loadAll(true),
+  onClick: () => {
+    void loadAll(true);
+    void reloadGroups();
+  },
 });
 const enableAll = mountButton(actionRoot, {
   label: '全部启用',
@@ -257,7 +280,18 @@ header.append(titleRow, summary, summarySecondary, translationRow);
 const body = el('div', 'sk-body');
 const noticeRoot = el('div', 'sk-notice-root');
 noticeRoot.setAttribute('aria-live', 'polite');
+const groupsNote = el('div', 'sk-groups-note');
+const groupsRow = el('div', 'sk-groups-row');
 const groupsRoot = el('div', 'sk-groups');
+const editGroups = el('button', 'sk-chip sk-groups-edit', '编辑分组');
+editGroups.type = 'button';
+editGroups.setAttribute('aria-pressed', 'false');
+editGroups.addEventListener('click', () => {
+  if (groupDraft) closeGroupEditor();
+  else openGroupEditor();
+});
+groupsRow.append(groupsRoot, editGroups);
+const groupEditor = el('div', 'sk-group-editor-root');
 const groupBarRoot = el('div');
 const conflictRoot = el('div');
 const search = el('input', 'sk-search') as HTMLInputElement;
@@ -275,7 +309,7 @@ footer.append(
   el('p', '', '管理 ~/.config/opencode/skills。关闭会把技能入口改名为 .disabled；OpenCode 不再加载，模型也看不到。'),
   el('p', '', '只显示这个目录里的文件技能。停用或卸载前先全部启用；技能更新后重新扫描。'),
 );
-body.append(noticeRoot, groupsRoot, groupBarRoot, conflictRoot, search, listRoot, footer);
+body.append(noticeRoot, groupsNote, groupsRow, groupEditor, groupBarRoot, conflictRoot, search, listRoot, footer);
 app.append(header, body);
 root.append(app);
 
@@ -293,6 +327,13 @@ let busy: string | null = null;
 let pendingBulk: boolean | null = null;
 let pendingOnlyGroup: SkillGroup | null = null;
 let selectedGroup: string | null = null;
+let groups: SkillGroup[] = cloneDefaultGroups();
+let groupsError: string | null = null;
+let groupsLoading = true;
+let groupDraft: GroupDraft | null = null;
+let groupEditorError: string | null = null;
+let pendingDeleteGroup = false;
+let pendingResetGroups = false;
 let query = '';
 let initialized = false;
 
@@ -561,6 +602,338 @@ const focusGroupChip = (id: string): void => {
   target?.focus();
 };
 
+const makeGroupId = (): string => {
+  const suffix = globalThis.crypto?.randomUUID?.().slice(0, 8) ?? Math.random().toString(36).slice(2, 10);
+  return `custom-${suffix}`;
+};
+
+const renderGroupsNote = (): void => {
+  groupsNote.replaceChildren();
+  if (!groupsError) return;
+  const node = el('div', 'sk-notice', `分组配置无法读取：${groupsError}`);
+  node.dataset.tone = 'error';
+  node.setAttribute('role', 'alert');
+  const actions = el('div', 'sk-notice-actions');
+  actions.append(actionButton('重新读取', () => void reloadGroups(), false, groupsLoading));
+  node.append(actions);
+  groupsNote.append(node);
+};
+
+const startGroupDraft = (group: SkillGroup | null): void => {
+  groupDraft = {
+    id: group?.id ?? null,
+    name: group?.name ?? '',
+    members: group ? [...group.skillIds] : [],
+  };
+  groupEditorError = null;
+  pendingDeleteGroup = false;
+  pendingResetGroups = false;
+  render();
+  const input = groupEditor.querySelector<HTMLInputElement>('.sk-group-name');
+  input?.focus();
+  input?.select();
+};
+
+const openGroupEditor = (): void => {
+  if (groupsError || groupsLoading || !data || rootBlocked()) return;
+  const group = groups.find((item) => item.id === selectedGroup) ?? groups[0] ?? null;
+  startGroupDraft(group);
+  groupEditor.scrollIntoView({ block: 'nearest' });
+};
+
+const closeGroupEditor = (): void => {
+  if (busy) return;
+  groupDraft = null;
+  groupEditorError = null;
+  pendingDeleteGroup = false;
+  pendingResetGroups = false;
+  render();
+  editGroups.focus();
+};
+
+const selectDraftGroup = (id: string): void => {
+  if (id === 'new') {
+    startGroupDraft(null);
+    return;
+  }
+  const group = groups.find((item) => item.id === id);
+  if (group) startGroupDraft(group);
+};
+
+const focusDraftName = (): void => {
+  groupEditor.querySelector<HTMLInputElement>('.sk-group-name')?.focus();
+};
+
+const saveGroupDraft = async (): Promise<void> => {
+  const draft = groupDraft;
+  if (!draft || busy || groupsError) return;
+  const name = draft.name.trim();
+  if (!name) {
+    groupEditorError = '请输入分组名称。';
+    render();
+    focusDraftName();
+    return;
+  }
+  if (name.length > GROUP_NAME_MAX) {
+    groupEditorError = `分组名称不能超过 ${GROUP_NAME_MAX} 个字符。`;
+    render();
+    focusDraftName();
+    return;
+  }
+  if (groups.some((group) => group.id !== draft.id && group.name.trim().toLowerCase() === name.toLowerCase())) {
+    groupEditorError = `已经有名为「${name}」的分组。`;
+    render();
+    focusDraftName();
+    return;
+  }
+  if (draft.members.length === 0) {
+    groupEditorError = '分组至少需要一个成员。';
+    render();
+    return;
+  }
+  const id = draft.id ?? makeGroupId();
+  const saved: SkillGroup = { id, name, skillIds: [...draft.members] };
+  const next = draft.id
+    ? groups.map((group) => (group.id === draft.id ? saved : group))
+    : [...groups, saved];
+  busy = 'groups';
+  groupEditorError = null;
+  render();
+  try {
+    groups = parseGroups(await request('POST', '/groups', { version: 1, groups: next }));
+    groupsError = null;
+    selectedGroup = id;
+    pendingOnlyGroup = null;
+    const stored = groups.find((group) => group.id === id) ?? null;
+    groupDraft = stored ? { id: stored.id, name: stored.name, members: [...stored.skillIds] } : null;
+    notice = { text: `已保存分组「${name}」。`, tone: 'success' };
+    void host.toast({ kind: 'success', message: `已保存分组「${name}」` }).catch(() => undefined);
+  } catch (error) {
+    groupEditorError = describeError(error);
+  } finally {
+    busy = null;
+    render();
+  }
+};
+
+const requestDeleteGroup = (): void => {
+  if (!groupDraft?.id || busy) return;
+  pendingDeleteGroup = true;
+  pendingResetGroups = false;
+  render();
+};
+
+const confirmDeleteGroup = async (): Promise<void> => {
+  if (!groupDraft?.id || busy) return;
+  const removed = groupDraft.id;
+  const next = groups.filter((group) => group.id !== removed);
+  busy = 'groups';
+  pendingDeleteGroup = false;
+  groupEditorError = null;
+  render();
+  try {
+    groups = parseGroups(await request('POST', '/groups', { version: 1, groups: next }));
+    groupsError = null;
+    if (pendingOnlyGroup?.id === removed) pendingOnlyGroup = null;
+    if (selectedGroup === removed) selectedGroup = null;
+    const target = groups.find((group) => group.id === selectedGroup) ?? groups[0] ?? null;
+    selectedGroup = target?.id ?? null;
+    groupDraft = target ? { id: target.id, name: target.name, members: [...target.skillIds] } : null;
+    notice = { text: '已删除分组。', tone: 'success' };
+  } catch (error) {
+    groupEditorError = describeError(error);
+  } finally {
+    busy = null;
+    render();
+  }
+};
+
+const requestResetGroups = (): void => {
+  if (busy || groupsLoading || groupsError) return;
+  pendingResetGroups = true;
+  pendingDeleteGroup = false;
+  render();
+};
+
+const confirmResetGroups = async (): Promise<void> => {
+  if (busy) return;
+  busy = 'groups';
+  pendingResetGroups = false;
+  groupEditorError = null;
+  render();
+  try {
+    groups = parseGroups(await request('POST', '/groups', { version: 1, groups: cloneDefaultGroups() }));
+    groupsError = null;
+    selectedGroup = null;
+    pendingOnlyGroup = null;
+    groupDraft = null;
+    notice = { text: '已恢复预设分组。', tone: 'success' };
+  } catch (error) {
+    groupEditorError = describeError(error);
+  } finally {
+    busy = null;
+    render();
+  }
+};
+
+const renderGroupEditor = (): void => {
+  groupEditor.replaceChildren();
+  if (!groupDraft) return;
+  const draft = groupDraft;
+  const card = el('section', 'sk-group-editor');
+  card.setAttribute('aria-label', '编辑分组');
+  const head = el('div', 'sk-section-head');
+  head.append(el('h2', 'sk-section-title', '编辑分组'), actionButton('关闭', closeGroupEditor, false, Boolean(busy)));
+  card.append(head);
+
+  const selectField = el('label', 'sk-field');
+  selectField.append(el('span', 'sk-field-label', '选择分组'));
+  const select = el('select', 'sk-input');
+  select.setAttribute('aria-label', '选择分组');
+  const newOption = el('option', '', '新建分组');
+  newOption.value = 'new';
+  select.append(newOption);
+  for (const group of groups) {
+    const option = el('option', '', `${group.name}（${group.skillIds.length}）`);
+    option.value = group.id;
+    select.append(option);
+  }
+  select.value = draft.id ?? 'new';
+  select.disabled = Boolean(busy);
+  select.addEventListener('change', () => selectDraftGroup(select.value));
+  selectField.append(select);
+
+  const nameField = el('label', 'sk-field');
+  nameField.append(el('span', 'sk-field-label', '名称'));
+  const nameInput = el('input', 'sk-input sk-group-name') as HTMLInputElement;
+  nameInput.type = 'text';
+  nameInput.value = draft.name;
+  nameInput.maxLength = GROUP_NAME_MAX;
+  nameInput.placeholder = '例如：日常开发';
+  nameInput.autocomplete = 'off';
+  nameInput.spellcheck = false;
+  nameInput.disabled = Boolean(busy);
+  nameInput.addEventListener('input', () => {
+    if (!groupDraft) return;
+    groupDraft.name = nameInput.value;
+    groupEditorError = null;
+  });
+  nameInput.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    void saveGroupDraft();
+  });
+  nameField.append(nameInput);
+  card.append(selectField, nameField);
+
+  const members = el('fieldset', 'sk-members');
+  const legend = el('legend', '', `成员（${draft.members.length}）`);
+  members.append(legend);
+  const tools = el('div', 'sk-members-tools');
+  tools.append(
+    actionButton('全选', () => {
+      if (!groupDraft) return;
+      const existing = data?.skills.map((skill) => skill.id) ?? [];
+      const missing = groupDraft.members.filter((id) => !existing.includes(id));
+      groupDraft.members = [...existing, ...missing];
+      render();
+    }, false, Boolean(busy)),
+    actionButton('清空', () => {
+      if (!groupDraft) return;
+      groupDraft.members = [];
+      render();
+    }, false, Boolean(busy)),
+  );
+  members.append(tools);
+  const memberList = el('div', 'sk-member-list');
+  for (const skill of data?.skills ?? []) {
+    const row = el('label', 'sk-check');
+    const checkbox = el('input') as HTMLInputElement;
+    checkbox.type = 'checkbox';
+    checkbox.checked = draft.members.includes(skill.id);
+    checkbox.disabled = Boolean(busy);
+    checkbox.addEventListener('change', () => {
+      if (!groupDraft) return;
+      if (checkbox.checked) {
+        if (!groupDraft.members.includes(skill.id)) groupDraft.members.push(skill.id);
+      } else {
+        groupDraft.members = groupDraft.members.filter((id) => id !== skill.id);
+      }
+      legend.textContent = `成员（${groupDraft.members.length}）`;
+      groupEditorError = null;
+    });
+    const copy = el('span', 'sk-check-copy');
+    copy.append(el('span', 'sk-check-name', displayName(skill)), el('code', 'sk-check-id', skill.id));
+    row.append(checkbox, copy);
+    memberList.append(row);
+  }
+  members.append(memberList);
+
+  const existingIds = new Set(data?.skills.map((skill) => skill.id) ?? []);
+  const missing = draft.members.filter((id) => !existingIds.has(id));
+  if (missing.length > 0) {
+    const box = el('div', 'sk-missing');
+    box.append(el('span', 'sk-missing-label', '目录中缺失：'));
+    for (const id of missing) {
+      const chip = el('button', 'sk-missing-chip', `${id} ×`);
+      chip.type = 'button';
+      chip.disabled = Boolean(busy);
+      chip.title = '从分组移除这个缺失成员';
+      chip.addEventListener('click', () => {
+        if (!groupDraft) return;
+        groupDraft.members = groupDraft.members.filter((item) => item !== id);
+        render();
+      });
+      box.append(chip);
+    }
+    members.append(box);
+  }
+  card.append(members);
+
+  if (groupEditorError) {
+    const error = el('p', 'sk-editor-error', groupEditorError);
+    error.setAttribute('role', 'alert');
+    card.append(error);
+  }
+
+  const actions = el('div', 'sk-editor-actions');
+  if (draft.id) actions.append(actionButton('删除分组', requestDeleteGroup, false, Boolean(busy)));
+  actions.append(
+    actionButton('恢复预设', requestResetGroups, false, Boolean(busy)),
+    actionButton(draft.id ? '保存更改' : '新建分组', () => void saveGroupDraft(), true, Boolean(busy)),
+  );
+  card.append(actions);
+
+  if (pendingDeleteGroup) {
+    const confirm = el('div', 'sk-editor-confirm');
+    confirm.dataset.tone = 'warning';
+    confirm.append(el('p', '', `删除分组「${draft.name.trim() || '未命名'}」？技能本身不会被删除。`));
+    const buttons = el('div', 'sk-actions');
+    buttons.append(
+      actionButton('确认删除', () => void confirmDeleteGroup(), true, Boolean(busy)),
+      actionButton('取消', () => { pendingDeleteGroup = false; render(); }, false, Boolean(busy)),
+    );
+    confirm.append(buttons);
+    card.append(confirm);
+  }
+
+  if (pendingResetGroups) {
+    const confirm = el('div', 'sk-editor-confirm');
+    confirm.dataset.tone = 'warning';
+    confirm.append(el('p', '', `用 ${DEFAULT_SKILL_GROUPS.length} 个预设分组替换当前 ${groups.length} 个分组？当前分组配置会被覆盖。`));
+    const buttons = el('div', 'sk-actions');
+    buttons.append(
+      actionButton('恢复预设', () => void confirmResetGroups(), true, Boolean(busy)),
+      actionButton('取消', () => { pendingResetGroups = false; render(); }, false, Boolean(busy)),
+    );
+    confirm.append(buttons);
+    card.append(confirm);
+  }
+
+  card.append(el('p', 'sk-editor-hint', '分组只影响面板筛选和批量开关，不改变技能；成员顺序决定组内步骤号，保存后写入 groups.json。'));
+  groupEditor.append(card);
+};
+
 const renderGroups = (): void => {
   groupsRoot.replaceChildren();
   const total = data?.skills.length ?? 0;
@@ -574,7 +947,7 @@ const renderGroups = (): void => {
     focusGroupChip('all');
   });
   groupsRoot.append(all);
-  for (const group of SKILL_GROUPS) {
+  for (const group of groups) {
     const count = groupSkillIds(group).length;
     const chip = el('button', 'sk-chip', `${group.name} ${count}`);
     chip.type = 'button';
@@ -587,13 +960,25 @@ const renderGroups = (): void => {
     });
     groupsRoot.append(chip);
   }
+  editGroups.textContent = groupDraft ? '关闭编辑' : '编辑分组';
+  editGroups.setAttribute('aria-pressed', groupDraft ? 'true' : 'false');
+  editGroups.disabled = groupsLoading || Boolean(groupsError) || Boolean(busy) || !data || rootBlocked();
+  editGroups.title = groupsLoading
+    ? '正在读取分组…'
+    : groupsError
+      ? '分组配置无法读取，修复文件后重新读取'
+      : !data
+        ? '技能列表尚未读取'
+        : rootBlocked()
+          ? '技能目录无法读取'
+          : '';
 };
 
 const renderGroupBar = (): void => {
   groupBarRoot.replaceChildren();
   if (!data || !selectedGroup) return;
   const current = data;
-  const group = SKILL_GROUPS.find((item) => item.id === selectedGroup);
+  const group = groups.find((item) => item.id === selectedGroup);
   if (!group) return;
   const available = groupSkillIds(group);
   const missing = group.skillIds.filter((id) => !available.includes(id));
@@ -791,7 +1176,7 @@ const renderSkill = (skill: SkillView, step = 0): HTMLElement => {
 const renderList = (): void => {
   listRoot.replaceChildren();
   if (!data) return;
-  const group = selectedGroup ? SKILL_GROUPS.find((item) => item.id === selectedGroup) : null;
+  const group = selectedGroup ? groups.find((item) => item.id === selectedGroup) : null;
   const base = group
     ? group.skillIds
         .map((id) => data?.skills.find((skill) => skill.id === id))
@@ -832,7 +1217,9 @@ const render = (): void => {
   renderSummary();
   renderTranslationControls();
   renderNotice();
+  renderGroupsNote();
   renderGroups();
+  renderGroupEditor();
   renderGroupBar();
   renderConflicts();
   renderList();
@@ -941,6 +1328,22 @@ const translateMissing = async (): Promise<void> => {
         notice = { text: `已翻译 ${done} 个技能。`, tone: 'success' };
       }
     }
+    render();
+  }
+};
+
+const reloadGroups = async (force = false): Promise<void> => {
+  if ((groupsLoading && !force) || groupDraft) return;
+  groupsLoading = true;
+  render();
+  try {
+    groups = parseGroups(await request('GET', '/groups'));
+    groupsError = null;
+    if (selectedGroup && !groups.some((group) => group.id === selectedGroup)) selectedGroup = null;
+  } catch (error) {
+    groupsError = describeGroupsError(error);
+  } finally {
+    groupsLoading = false;
     render();
   }
 };
@@ -1084,6 +1487,7 @@ host.onReady((context) => {
   }
   initialized = true;
   void loadAll(true);
+  void reloadGroups(true);
 });
 
 render();

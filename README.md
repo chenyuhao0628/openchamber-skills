@@ -4,7 +4,7 @@ English | [简体中文](#简体中文)
 
 ## English
 
-**Skills Manager** enables or disables OpenCode global skills by renaming their entry files, without editing skill bodies. It also checks entry conflicts, translates names and descriptions to Chinese on demand, and offers preset groups for batch toggling.
+**Skills Manager** enables or disables OpenCode global skills by renaming their entry files, without editing skill bodies. It also checks entry conflicts, translates names and descriptions to Chinese on demand, and offers editable groups for batch toggling.
 
 ### Highlights
 
@@ -12,7 +12,8 @@ English | [简体中文](#简体中文)
 - Conflict detection for duplicate entries, unreadable files and malformed frontmatter.
 - Optional Chinese translation of names and descriptions using the host's small model; cached with `0600` permissions.
 - Local service on `127.0.0.1` with Bearer-token checks; only manages `~/.config/opencode/skills`.
-- Preset groups for batch toggling; disabling the extension does not re-enable skills.
+- Editable groups with local persistence for batch toggling; disabling the extension does not re-enable skills.
+- Create, rename, delete and reset groups from the panel; configuration is stored at `~/.config/openchamber/skills-manager/groups.json` with `0600` permissions.
 
 ### Screenshot
 
@@ -36,7 +37,7 @@ Requires OpenChamber **2.4.0 or newer**. The `model` capability is used only for
 
 ## 简体中文
 
-当前版本 **0.2.1**，核对日期 **2026-10-23**。只管理 OpenCode 全局技能目录 `~/.config/opencode/skills`：按入口文档启停、中文翻译、按联动分组批量开关，并检查入口冲突。不改写技能正文，不新增技能，不碰其他 agent 的技能目录。
+当前版本 **0.3.0**，核对日期 **2026-10-24**。只管理 OpenCode 全局技能目录 `~/.config/opencode/skills`：按入口文档启停、中文翻译、按可编辑的联动分组批量开关，并检查入口冲突。不改写技能正文，不新增技能，不碰其他 agent 的技能目录。
 
 ## 安装
 
@@ -46,7 +47,7 @@ Requires OpenChamber **2.4.0 or newer**. The `model` capability is used only for
 https://github.com/chenyuhao0628/openchamber-skills
 ```
 
-0.2.0 新增“模型调用”能力用于中文翻译；0.2.1 修正清单位置，更新/重装时会出现该权限。
+0.2.0 新增“模型调用”能力用于中文翻译；0.2.1 修正清单位置；0.3.0 增加可编辑分组并持久化到本地配置。更新或重装 0.3.0 时仍会出现模型调用权限提示。
 
 从本地目录安装（开发时）：
 
@@ -79,7 +80,7 @@ OpenCode 的扫描器只认名为 `SKILL.md` 的文件和源根目录的 `*.md`�
 
 ## 联动分组
 
-分组是面板元数据，不是技能，不增加模型上下文。当前预设：
+分组是面板元数据，不是技能，不增加模型上下文。首次读取使用六个预设组：
 
 | 组 | 技能 |
 | --- | --- |
@@ -90,17 +91,21 @@ OpenCode 的扫描器只认名为 `SKILL.md` 的文件和源根目录的 `*.md`�
 | 视频 | yichen-jianying-edit |
 | 浏览器 | browser-skill |
 
+- 点组标签右侧的**编辑分组**可新建分组、改名、勾选成员、删除分组或恢复预设；成员顺序按勾选先后保存，并决定列表里的步骤号。
+- 分组配置写入 `~/.config/openchamber/skills-manager/groups.json`（0600），支持最多 50 个分组、40 字符组名；组名不能重复，分组 ID 在改名时保持不变。
+- 预设只在没有配置文件时作为初始值。修改、删除或新建后以 `groups.json` 为准；点“恢复预设”会用六个预设组覆盖当前配置，执行前就地确认。
+- 保存后立即刷新组标签和筛选，不改技能文件，也不改变模型上下文。没有跨窗口锁，多个面板同时保存时最后一次写入生效。
 - 顶部组标签显示可用技能数量；选中后列表只显示该组，并按顺序标注步骤号。
 - **启用整组 / 关闭整组**只处理该组成员。
 - **仅启用本组**会关闭其他组的文件技能，适合控制上下文；执行前就地确认。
-- 组内有冲突或缺失技能时阻止组操作；缺失会明确显示。
+- 组内有冲突或缺失技能时阻止组操作；缺失会明确显示，可在编辑器里单独移除。
 - 分组只保证“这些技能一起可见”，不会强制模型按顺序使用；要强制工作流顺序需要额外规则/路由技能，会增加上下文，本版不做。
-- 分组目前是预设，暂不提供可视化分组编辑器。
+- `groups.json` 损坏或无法读取时，面板保留预设用于展示并禁止编辑；修复或备份文件后点“重新读取”，不会静默覆盖原文件。
 
 ## 面板
 
 - 顶部：模型可见数量、总数、约 token 估算；翻译/原文按钮和翻译进度。
-- 组标签：全部 + 六个预设组。
+- 组标签：全部 + 自定义分组（首次为六个预设），右侧固定“编辑分组”入口。
 - 组操作栏：启用整组、关闭整组、仅启用本组。
 - 搜索框；技能行显示中文名称/描述或原文、ID、状态和开关。
 - 有冲突时才显示冲突区；没有冲突不占版面。
@@ -144,6 +149,7 @@ OpenCode 的扫描器只认名为 `SKILL.md` 的文件和源根目录的 `*.md`�
 
 - 只改技能入口文件名；为显示名称和描述会读取 frontmatter，但不返回或记录正文。
 - 译文缓存：`~/.config/openchamber/skills-manager/translations.json`，权限 0600；损坏时报错，不静默重置。
+- 分组配置：`~/.config/openchamber/skills-manager/groups.json`，权限 0600；缺失时使用预设，损坏时保留原文件并禁止编辑。
 - 停用状态本身就是 `.disabled` 文件；解决双入口冲突时另存 `.conflict-*` 备份。扩展不删除这些文件。
 - 测试与预览都使用临时目录或合成数据；没有把真实技能内容写入测试、日志或文档。
 
@@ -162,14 +168,11 @@ npm run preview
 | --- | --- |
 | `src/core/skills.ts` | 扫描、frontmatter、冲突判断、改名事务、批量开关 |
 | `src/core/translations.ts` | 译文缓存读写 |
+| `src/core/groups.ts` | 分组配置读写与原子替换 |
 | `src/service/main.ts` | 本地 HTTP、Bearer 校验、路由、串行读写 |
 | `src/panel/main.ts` | 列表、开关、翻译、分组、冲突提示 |
 | `src/panel/translate.ts` | 翻译提示词与响应解析 |
-| `src/shared/groups.ts` | 预设联动分组 |
+| `src/shared/groups.ts` | 预设分组、配置类型与校验 |
 | `src/shared/types.ts` | 面板与服务的数据契约 |
-| `tests/` | 扫描/冲突/批量、HTTP、缓存、分组和翻译解析 |
+| `tests/` | 扫描/冲突/批量、HTTP、缓存、分组存储与校验、翻译解析 |
 | `ui/native.css` | 打包时内联的宿主基础样式 |
-
-## License
-
-MIT. See [LICENSE](LICENSE).

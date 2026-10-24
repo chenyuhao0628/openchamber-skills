@@ -9,6 +9,7 @@ import {
   setSkillEnabled,
 } from '../core/skills.ts';
 import { TranslationError, readTranslations, writeTranslations } from '../core/translations.ts';
+import { GroupError, readGroups, writeGroups } from '../core/groups.ts';
 
 const port = Number(process.env.OPENCHAMBER_SERVICE_PORT);
 const token = process.env.OPENCHAMBER_SERVICE_TOKEN ?? '';
@@ -120,6 +121,15 @@ const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Prom
     json(res, 200, await exclusive(() => batchSetEnabled(HOME, enable, disable)));
     return;
   }
+  if (url.pathname === '/groups' && req.method === 'GET') {
+    json(res, 200, await exclusive(() => readGroups(HOME)));
+    return;
+  }
+  if (url.pathname === '/groups' && req.method === 'POST') {
+    const body = await readBody(req);
+    json(res, 200, await exclusive(() => writeGroups(HOME, body)));
+    return;
+  }
   if (url.pathname === '/translations' && req.method === 'GET') {
     json(res, 200, await exclusive(() => readTranslations(HOME)));
     return;
@@ -143,7 +153,7 @@ const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Prom
 const server = http.createServer((req, res) => {
   void handle(req, res).catch((error: unknown) => {
     if (res.headersSent || res.destroyed) return;
-    if (error instanceof SkillsError || error instanceof TranslationError) {
+    if (error instanceof SkillsError || error instanceof TranslationError || error instanceof GroupError) {
       json(res, error.status, {
         error: error.message,
         code: error.code,
