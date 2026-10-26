@@ -1,5 +1,5 @@
 import { connectHost, HostRequestError } from '@openchamber/sdk';
-import { applyHostReady, mountButton } from '@openchamber/sdk/ui';
+import { applyHostReady, mountButton, mountSelect } from '@openchamber/sdk/ui';
 import type {
   ConflictKind,
   ConflictView,
@@ -283,6 +283,7 @@ noticeRoot.setAttribute('aria-live', 'polite');
 const groupsNote = el('div', 'sk-groups-note');
 const groupsRow = el('div', 'sk-groups-row');
 const groupsRoot = el('div', 'sk-groups');
+const groupSelectRoot = el('div', 'sk-group-select');
 const editGroups = el('button', 'sk-chip sk-groups-edit', '编辑分组');
 editGroups.type = 'button';
 editGroups.setAttribute('aria-pressed', 'false');
@@ -290,7 +291,7 @@ editGroups.addEventListener('click', () => {
   if (groupDraft) closeGroupEditor();
   else openGroupEditor();
 });
-groupsRow.append(groupsRoot, editGroups);
+groupsRow.append(groupsRoot, groupSelectRoot, editGroups);
 const groupEditor = el('div', 'sk-group-editor-root');
 const groupBarRoot = el('div');
 const conflictRoot = el('div');
@@ -336,6 +337,20 @@ let pendingDeleteGroup = false;
 let pendingResetGroups = false;
 let query = '';
 let initialized = false;
+
+const groupSelect = mountSelect(groupSelectRoot, {
+  value: 'all',
+  options: [{ id: 'all', label: '全部' }],
+  onChange: (id) => {
+    selectedGroup = id === 'all' ? null : id;
+    render();
+  },
+});
+const groupSelectTrigger = groupSelectRoot.querySelector<HTMLButtonElement>('.oc-sdk-trigger');
+if (groupSelectTrigger) {
+  groupSelectTrigger.setAttribute('aria-label', '分组筛选');
+  groupSelectTrigger.removeAttribute('aria-labelledby');
+}
 
 const rootBlocked = (): boolean => Boolean(data?.root.error);
 
@@ -972,6 +987,17 @@ const renderGroups = (): void => {
         : rootBlocked()
           ? '技能目录无法读取'
           : '';
+  groupSelect.update({
+    value: selectedGroup ?? 'all',
+    options: [
+      { id: 'all', label: `全部 ${total}` },
+      ...groups.map((group) => ({
+        id: group.id,
+        label: `${group.name} ${groupSkillIds(group).length}`,
+        hint: groupState(group),
+      })),
+    ],
+  });
 };
 
 const renderGroupBar = (): void => {

@@ -13,6 +13,7 @@ English | [简体中文](#简体中文)
 - Optional Chinese translation of names and descriptions using the host's small model; cached with `0600` permissions.
 - Local service on `127.0.0.1` with Bearer-token checks; only manages `~/.config/opencode/skills`.
 - Editable groups with local persistence for batch toggling; disabling the extension does not re-enable skills.
+- Group tabs on wide panels, and a host-native group dropdown below 380px so every group stays visible in a narrow sidebar.
 - Create, rename, delete and reset groups from the panel; configuration is stored at `~/.config/openchamber/skills-manager/groups.json` with `0600` permissions.
 
 ### Screenshot
@@ -37,7 +38,7 @@ Requires OpenChamber **2.4.0 or newer**. The `model` capability is used only for
 
 ## 简体中文
 
-当前版本 **0.3.0**，核对日期 **2026-10-24**。只管理 OpenCode 全局技能目录 `~/.config/opencode/skills`：按入口文档启停、中文翻译、按可编辑的联动分组批量开关，并检查入口冲突。不改写技能正文，不新增技能，不碰其他 agent 的技能目录。
+当前版本 **0.3.1**，核对日期 **2026-10-26**。只管理 OpenCode 全局技能目录 `~/.config/opencode/skills`：按入口文档启停、中文翻译、按可编辑的联动分组批量开关，并检查入口冲突。不改写技能正文，不新增技能，不碰其他 agent 的技能目录。
 
 ## 安装
 
@@ -47,7 +48,7 @@ Requires OpenChamber **2.4.0 or newer**. The `model` capability is used only for
 https://github.com/chenyuhao0628/openchamber-skills
 ```
 
-0.2.0 新增“模型调用”能力用于中文翻译；0.2.1 修正清单位置；0.3.0 增加可编辑分组并持久化到本地配置。更新或重装 0.3.0 时仍会出现模型调用权限提示。
+0.2.0 新增“模型调用”能力用于中文翻译；0.2.1 修正清单位置；0.3.0 增加可编辑分组并持久化到本地配置；0.3.1 把窄栏的分组标签收成下拉框，避免被裁切。更新或重装 0.3.1 时仍会出现模型调用权限提示。
 
 从本地目录安装（开发时）：
 
@@ -105,7 +106,7 @@ OpenCode 的扫描器只认名为 `SKILL.md` 的文件和源根目录的 `*.md`�
 ## 面板
 
 - 顶部：模型可见数量、总数、约 token 估算；翻译/原文按钮和翻译进度。
-- 组标签：全部 + 自定义分组（首次为六个预设），右侧固定“编辑分组”入口。
+- 组标签：全部 + 自定义分组（首次为六个预设），右侧固定“编辑分组”入口；面板窄于 380px 时改用分组下拉框，保留全部组和数量。
 - 组操作栏：启用整组、关闭整组、仅启用本组。
 - 搜索框；技能行显示中文名称/描述或原文、ID、状态和开关。
 - 有冲突时才显示冲突区；没有冲突不占版面。

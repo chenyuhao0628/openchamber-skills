@@ -330,8 +330,19 @@ buttons.conflict.onclick = () => {
   show();
 };
 document.querySelector('#group').onclick = () => {
-  const chip = frame.contentDocument?.querySelector('[data-group="reverse"]');
-  chip?.click();
+  const doc = frame.contentDocument;
+  const chip = doc?.querySelector('[data-group="reverse"]');
+  if (chip && chip.getClientRects().length > 0) {
+    chip.click();
+    return;
+  }
+  doc?.querySelector('.oc-sdk-trigger')?.click();
+  setTimeout(() => {
+    const option = [...(doc?.querySelectorAll('.oc-sdk-option') ?? [])].find((node) =>
+      node.textContent?.includes('逆向工程'),
+    );
+    option?.click();
+  }, 50);
 };
 document.querySelector('#edit-groups').onclick = () => {
   const button = frame.contentDocument?.querySelector('.sk-groups-edit');
