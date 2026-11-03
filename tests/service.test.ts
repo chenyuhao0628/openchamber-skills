@@ -171,7 +171,7 @@ test('skills service enforces auth and checks entry conflicts', async (t) => {
   await t.test('stores editable groups privately', async () => {
     const initial = await call('/groups');
     assert.equal(initial.status, 200);
-    assert.equal((initial.data.groups as unknown[]).length, 6);
+    assert.deepEqual(initial.data.groups, []);
 
     const saved = await call('/groups', 'POST', {
       version: 1,

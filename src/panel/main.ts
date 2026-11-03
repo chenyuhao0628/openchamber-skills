@@ -12,9 +12,8 @@ import type {
   TranslationEntry,
 } from '../shared/types.ts';
 import {
-  DEFAULT_SKILL_GROUPS,
   GROUP_NAME_MAX,
-  cloneDefaultGroups,
+  mergeExampleGroups,
   normalizeGroupsFile,
   type SkillGroup,
 } from '../shared/groups.ts';
@@ -328,13 +327,13 @@ let busy: string | null = null;
 let pendingBulk: boolean | null = null;
 let pendingOnlyGroup: SkillGroup | null = null;
 let selectedGroup: string | null = null;
-let groups: SkillGroup[] = cloneDefaultGroups();
+let groups: SkillGroup[] = [];
 let groupsError: string | null = null;
 let groupsLoading = true;
 let groupDraft: GroupDraft | null = null;
 let groupEditorError: string | null = null;
 let pendingDeleteGroup = false;
-let pendingResetGroups = false;
+let pendingImportExamples = false;
 let query = '';
 let initialized = false;
 
@@ -624,14 +623,18 @@ const makeGroupId = (): string => {
 
 const renderGroupsNote = (): void => {
   groupsNote.replaceChildren();
-  if (!groupsError) return;
-  const node = el('div', 'sk-notice', `分组配置无法读取：${groupsError}`);
-  node.dataset.tone = 'error';
-  node.setAttribute('role', 'alert');
-  const actions = el('div', 'sk-notice-actions');
-  actions.append(actionButton('重新读取', () => void reloadGroups(), false, groupsLoading));
-  node.append(actions);
-  groupsNote.append(node);
+  if (groupsError) {
+    const node = el('div', 'sk-notice', `分组配置无法读取：${groupsError}`);
+    node.dataset.tone = 'error';
+    node.setAttribute('role', 'alert');
+    const actions = el('div', 'sk-notice-actions');
+    actions.append(actionButton('重新读取', () => void reloadGroups(), false, groupsLoading));
+    node.append(actions);
+    groupsNote.append(node);
+    return;
+  }
+  if (groupsLoading || groups.length > 0 || !data || rootBlocked()) return;
+  groupsNote.append(el('div', 'sk-notice', '还没有分组。点「编辑分组」新建，或在编辑器里导入示例分组。'));
 };
 
 const startGroupDraft = (group: SkillGroup | null): void => {
@@ -642,7 +645,7 @@ const startGroupDraft = (group: SkillGroup | null): void => {
   };
   groupEditorError = null;
   pendingDeleteGroup = false;
-  pendingResetGroups = false;
+  pendingImportExamples = false;
   render();
   const input = groupEditor.querySelector<HTMLInputElement>('.sk-group-name');
   input?.focus();
@@ -661,7 +664,7 @@ const closeGroupEditor = (): void => {
   groupDraft = null;
   groupEditorError = null;
   pendingDeleteGroup = false;
-  pendingResetGroups = false;
+  pendingImportExamples = false;
   render();
   editGroups.focus();
 };
@@ -734,7 +737,7 @@ const saveGroupDraft = async (): Promise<void> => {
 const requestDeleteGroup = (): void => {
   if (!groupDraft?.id || busy) return;
   pendingDeleteGroup = true;
-  pendingResetGroups = false;
+  pendingImportExamples = false;
   render();
 };
 
@@ -763,26 +766,34 @@ const confirmDeleteGroup = async (): Promise<void> => {
   }
 };
 
-const requestResetGroups = (): void => {
+const requestImportExamples = (): void => {
   if (busy || groupsLoading || groupsError) return;
-  pendingResetGroups = true;
+  if (mergeExampleGroups(groups).added.length === 0) {
+    notice = { text: '示例分组的名称或 ID 都已存在，没有可导入的分组。', tone: 'info' };
+    render();
+    return;
+  }
+  pendingImportExamples = true;
   pendingDeleteGroup = false;
   render();
 };
 
-const confirmResetGroups = async (): Promise<void> => {
+const confirmImportExamples = async (): Promise<void> => {
   if (busy) return;
+  const { groups: next, added } = mergeExampleGroups(groups);
+  pendingImportExamples = false;
+  if (added.length === 0) {
+    notice = { text: '示例分组的名称或 ID 都已存在，没有可导入的分组。', tone: 'info' };
+    render();
+    return;
+  }
   busy = 'groups';
-  pendingResetGroups = false;
   groupEditorError = null;
   render();
   try {
-    groups = parseGroups(await request('POST', '/groups', { version: 1, groups: cloneDefaultGroups() }));
+    groups = parseGroups(await request('POST', '/groups', { version: 1, groups: next }));
     groupsError = null;
-    selectedGroup = null;
-    pendingOnlyGroup = null;
-    groupDraft = null;
-    notice = { text: '已恢复预设分组。', tone: 'success' };
+    notice = { text: `已导入 ${added.length} 个示例分组。`, tone: 'success' };
   } catch (error) {
     groupEditorError = describeError(error);
   } finally {
@@ -914,7 +925,7 @@ const renderGroupEditor = (): void => {
   const actions = el('div', 'sk-editor-actions');
   if (draft.id) actions.append(actionButton('删除分组', requestDeleteGroup, false, Boolean(busy)));
   actions.append(
-    actionButton('恢复预设', requestResetGroups, false, Boolean(busy)),
+    actionButton('导入示例分组', requestImportExamples, false, Boolean(busy)),
     actionButton(draft.id ? '保存更改' : '新建分组', () => void saveGroupDraft(), true, Boolean(busy)),
   );
   card.append(actions);
@@ -932,14 +943,15 @@ const renderGroupEditor = (): void => {
     card.append(confirm);
   }
 
-  if (pendingResetGroups) {
+  if (pendingImportExamples) {
+    const importable = mergeExampleGroups(groups).added.length;
     const confirm = el('div', 'sk-editor-confirm');
     confirm.dataset.tone = 'warning';
-    confirm.append(el('p', '', `用 ${DEFAULT_SKILL_GROUPS.length} 个预设分组替换当前 ${groups.length} 个分组？当前分组配置会被覆盖。`));
+    confirm.append(el('p', '', `导入 ${importable} 个示例分组？已有同名或同 ID 的分组会跳过，当前分组不会被覆盖。`));
     const buttons = el('div', 'sk-actions');
     buttons.append(
-      actionButton('恢复预设', () => void confirmResetGroups(), true, Boolean(busy)),
-      actionButton('取消', () => { pendingResetGroups = false; render(); }, false, Boolean(busy)),
+      actionButton('确认导入', () => void confirmImportExamples(), true, Boolean(busy)),
+      actionButton('取消', () => { pendingImportExamples = false; render(); }, false, Boolean(busy)),
     );
     confirm.append(buttons);
     card.append(confirm);

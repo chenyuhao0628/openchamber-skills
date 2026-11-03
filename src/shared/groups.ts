@@ -22,7 +22,7 @@ export class GroupFileError extends Error {
   }
 }
 
-export const DEFAULT_SKILL_GROUPS: SkillGroup[] = [
+export const EXAMPLE_SKILL_GROUPS: SkillGroup[] = [
   {
     id: 'macos-ui',
     name: 'macOS UI',
@@ -72,8 +72,21 @@ export const DEFAULT_SKILL_GROUPS: SkillGroup[] = [
   },
 ];
 
-export const cloneDefaultGroups = (): SkillGroup[] =>
-  DEFAULT_SKILL_GROUPS.map((group) => ({ ...group, skillIds: [...group.skillIds] }));
+export const cloneExampleGroups = (): SkillGroup[] =>
+  EXAMPLE_SKILL_GROUPS.map((group) => ({ ...group, skillIds: [...group.skillIds] }));
+
+export const mergeExampleGroups = (existing: SkillGroup[]): { groups: SkillGroup[]; added: SkillGroup[] } => {
+  const ids = new Set(existing.map((group) => group.id));
+  const names = new Set(existing.map((group) => group.name.trim().toLowerCase()));
+  const added = cloneExampleGroups().filter((group) => {
+    const name = group.name.toLowerCase();
+    if (ids.has(group.id) || names.has(name)) return false;
+    ids.add(group.id);
+    names.add(name);
+    return true;
+  });
+  return { groups: [...existing, ...added], added };
+};
 
 export const normalizeGroupsFile = (value: unknown): GroupsFile => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {

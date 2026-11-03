@@ -688,56 +688,6 @@ var GroupFileError = class extends Error {
     this.name = "GroupFileError";
   }
 };
-var DEFAULT_SKILL_GROUPS = [
-  {
-    id: "macos-ui",
-    name: "macOS UI",
-    skillIds: [
-      "appkit-interop",
-      "swiftui-patterns",
-      "window-management",
-      "liquid-glass",
-      "view-refactor"
-    ]
-  },
-  {
-    id: "macos-build",
-    name: "macOS \u6784\u5EFA",
-    skillIds: [
-      "build-run-debug",
-      "test-triage",
-      "swiftpm-macos",
-      "signing-entitlements",
-      "packaging-notarization",
-      "telemetry"
-    ]
-  },
-  {
-    id: "reverse",
-    name: "\u9006\u5411\u5DE5\u7A0B",
-    skillIds: [
-      "reverse-engineering-unpacking",
-      "kuna-decompiler",
-      "reverse-engineer-anything"
-    ]
-  },
-  {
-    id: "cloudflare",
-    name: "Cloudflare",
-    skillIds: ["cloudflare", "workers-best-practices", "wrangler"]
-  },
-  {
-    id: "video",
-    name: "\u89C6\u9891",
-    skillIds: ["yichen-jianying-edit"]
-  },
-  {
-    id: "browser",
-    name: "\u6D4F\u89C8\u5668",
-    skillIds: ["browser-skill"]
-  }
-];
-var cloneDefaultGroups = () => DEFAULT_SKILL_GROUPS.map((group) => ({ ...group, skillIds: [...group.skillIds] }));
 var normalizeGroupsFile = (value) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new GroupFileError("\u5206\u7EC4\u914D\u7F6E\u683C\u5F0F\u4E0D\u6B63\u786E");
@@ -798,7 +748,7 @@ var GroupError = class extends Error {
     this.status = status;
   }
 };
-var defaults = () => ({ version: 1, groups: cloneDefaultGroups() });
+var defaults = () => ({ version: 1, groups: [] });
 var groupsFile = (home) => path3.join(home, ...DATA_DIR2, GROUPS_FILE);
 var readGroups = async (home) => {
   let raw;

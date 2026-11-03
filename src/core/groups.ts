@@ -3,7 +3,6 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
   GroupFileError,
-  cloneDefaultGroups,
   normalizeGroupsFile,
   type GroupsFile,
 } from '../shared/groups.ts';
@@ -23,7 +22,7 @@ export class GroupError extends Error {
   }
 }
 
-const defaults = (): GroupsFile => ({ version: 1, groups: cloneDefaultGroups() });
+const defaults = (): GroupsFile => ({ version: 1, groups: [] });
 
 const groupsFile = (home: string): string => path.join(home, ...DATA_DIR, GROUPS_FILE);
 

@@ -4,7 +4,6 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os';
 import path from 'node:path';
 import { GroupError, readGroups, writeGroups } from '../src/core/groups.ts';
-import { DEFAULT_SKILL_GROUPS } from '../src/shared/groups.ts';
 
 const groupsPath = (home: string): string =>
   path.join(home, '.config/openchamber/skills-manager/groups.json');
@@ -18,13 +17,13 @@ const exists = async (file: string): Promise<boolean> => {
   }
 };
 
-test('missing group config returns presets without writing a file', async (t) => {
+test('missing group config returns no groups without writing a file', async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'skills-groups-'));
   t.after(() => rm(home, { recursive: true, force: true }));
 
   const result = await readGroups(home);
   assert.equal(result.version, 1);
-  assert.deepEqual(result.groups.map((group) => group.id), DEFAULT_SKILL_GROUPS.map((group) => group.id));
+  assert.deepEqual(result.groups, []);
   assert.equal(await exists(groupsPath(home)), false);
 });
 
