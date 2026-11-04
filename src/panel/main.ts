@@ -20,7 +20,9 @@ import {
 import { TRANSLATION_SYSTEM, buildTranslationPrompt, parseTranslationResponse } from './translate.ts';
 import css from './style.css';
 import native from '../../ui/native.css';
+import { applyDocumentLanguage, i18n, serverText } from './i18n.ts';
 
+const { t } = i18n;
 const host = connectHost({ requestTimeoutMs: 30_000 });
 const root = document.querySelector<HTMLElement>('#root');
 if (!root) throw new Error('Missing #root');
@@ -79,7 +81,7 @@ const parseConflict = (value: unknown): ConflictView | null => {
   return {
     kind: record.kind,
     skillId: record.skillId,
-    message: asString(record.message, '冲突'),
+    message: asString(record.message, t('冲突')),
     activePath: asNullableString(record.activePath),
     disabledPath: asNullableString(record.disabledPath),
     blocking: asBool(record.blocking),
@@ -112,7 +114,7 @@ const parseSkill = (value: unknown): SkillView | null => {
 
 const parseRoot = (value: unknown): RootView => {
   if (!value || typeof value !== 'object') {
-    throw new ServiceError('服务返回的技能目录信息不正确。', 'parse', []);
+    throw new ServiceError(t('服务返回的技能目录信息不正确。'), 'parse', []);
   }
   const record = value as Record<string, unknown>;
   return {
@@ -123,9 +125,9 @@ const parseRoot = (value: unknown): RootView => {
 };
 
 const parseResponse = (value: unknown): SkillsResponse => {
-  if (!value || typeof value !== 'object') throw new ServiceError('服务返回的数据格式不正确。', 'parse', []);
+  if (!value || typeof value !== 'object') throw new ServiceError(t('服务返回的数据格式不正确。'), 'parse', []);
   const record = value as Record<string, unknown>;
-  if (!Array.isArray(record.skills)) throw new ServiceError('服务返回的数据格式不正确。', 'parse', []);
+  if (!Array.isArray(record.skills)) throw new ServiceError(t('服务返回的数据格式不正确。'), 'parse', []);
   const skills = record.skills.map(parseSkill).filter((item): item is SkillView => item !== null);
   const conflicts = Array.isArray(record.conflicts)
     ? record.conflicts.map(parseConflict).filter((item): item is ConflictView => item !== null)
@@ -151,10 +153,10 @@ const parseResponse = (value: unknown): SkillsResponse => {
 const emptyTranslations = (): TranslationCache => ({ version: 1, locale: 'zh-CN', entries: {} });
 
 const parseTranslationCache = (value: unknown): TranslationCache => {
-  if (!value || typeof value !== 'object') throw new ServiceError('翻译缓存格式不正确。', 'parse', []);
+  if (!value || typeof value !== 'object') throw new ServiceError(t('翻译缓存格式不正确。'), 'parse', []);
   const record = value as Record<string, unknown>;
   if (record.version !== 1 || record.locale !== 'zh-CN' || !record.entries || typeof record.entries !== 'object' || Array.isArray(record.entries)) {
-    throw new ServiceError('翻译缓存格式不正确。', 'parse', []);
+    throw new ServiceError(t('翻译缓存格式不正确。'), 'parse', []);
   }
   const entries: Record<string, TranslationEntry> = {};
   for (const [id, item] of Object.entries(record.entries as Record<string, unknown>)) {
@@ -182,7 +184,7 @@ const parseGroups = (value: unknown): SkillGroup[] => {
   try {
     return normalizeGroupsFile(value).groups;
   } catch (error) {
-    throw new ServiceError(error instanceof Error ? error.message : '分组配置格式不正确。', 'parse', []);
+    throw new ServiceError(error instanceof Error ? serverText(error.message) ?? error.message : t('分组配置格式不正确。'), 'parse', []);
   }
 };
 
@@ -196,11 +198,11 @@ const request = async (method: 'GET' | 'POST', path: string, body?: unknown): Pr
   try {
     parsed = JSON.parse(response.body) as unknown;
   } catch {
-    throw new ServiceError('服务返回了无法识别的数据，请重试。', 'parse', []);
+    throw new ServiceError(t('服务返回了无法识别的数据，请重试。'), 'parse', []);
   }
   if (response.status >= 400) {
     const record = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
-    const message = typeof record.error === 'string' ? record.error : `请求失败（${response.status}）`;
+    const message = typeof record.error === 'string' ? serverText(record.error) ?? record.error : t('请求失败（{status}）', { status: response.status });
     const code = typeof record.code === 'string' ? record.code : null;
     const conflicts = Array.isArray(record.conflicts)
       ? record.conflicts.map(parseConflict).filter((item): item is ConflictView => item !== null)
@@ -212,31 +214,31 @@ const request = async (method: 'GET' | 'POST', path: string, body?: unknown): Pr
 
 const describeError = (error: unknown): string => {
   if (error instanceof HostRequestError) {
-    if (error.code === 'NO_SERVICE') return '请在设置 → 扩展中允许“技能开关”运行本地服务。';
-    if (error.code === 'SERVICE_FAILED') return '本地服务尚未就绪，请重新加载扩展后重试。';
-    if (error.code === 'DISABLED') return '技能开关扩展已停用，请在扩展设置中启用。';
-    if (error.code === 'HOST_TIMEOUT') return '本地服务响应超时，请重试。';
-    if (error.code === 'NOT_GRANTED') return '请在扩展设置中允许“模型调用”权限，或重新安装扩展。';
-    if (error.code === 'UNSUPPORTED') return '当前宿主或模型不支持翻译请求。';
-    return '无法连接本地服务，请检查扩展授权。';
+    if (error.code === 'NO_SERVICE') return t('请在设置 → 扩展中允许“技能开关”运行本地服务。');
+    if (error.code === 'SERVICE_FAILED') return t('本地服务尚未就绪，请重新加载扩展后重试。');
+    if (error.code === 'DISABLED') return t('技能开关扩展已停用，请在扩展设置中启用。');
+    if (error.code === 'HOST_TIMEOUT') return t('本地服务响应超时，请重试。');
+    if (error.code === 'NOT_GRANTED') return t('请在扩展设置中允许“模型调用”权限，或重新安装扩展。');
+    if (error.code === 'UNSUPPORTED') return t('当前宿主或模型不支持翻译请求。');
+    return t('无法连接本地服务，请检查扩展授权。');
   }
-  if (error instanceof ServiceError) return error.message;
-  return error instanceof Error ? error.message : '操作失败，请重试。';
+  if (error instanceof ServiceError) return serverText(error.message) ?? error.message;
+  return serverText(error instanceof Error ? error.message : null) ?? t('操作失败，请重试。');
 };
 
 const describeGroupsError = (error: unknown): string =>
   error instanceof ServiceError && error.code === 'not-found'
-    ? '本地服务版本过旧，请在扩展设置中禁用再启用“技能开关”。'
+    ? t('本地服务版本过旧，请在扩展设置中禁用再启用“技能开关”。')
     : describeError(error);
 
 const app = el('main', 'ext sk');
-app.setAttribute('aria-label', '技能开关');
+app.setAttribute('aria-label', t('技能开关'));
 const header = el('header', 'sk-header');
 const titleRow = el('div', 'sk-title-row');
-const title = el('h1', 'sk-title', '技能开关');
+const title = el('h1', 'sk-title', t('技能开关'));
 const actionRoot = el('div', 'sk-actions');
 const refresh = mountButton(actionRoot, {
-  label: '重新扫描',
+  label: t('重新扫描'),
   variant: 'outline',
   size: 'sm',
   onClick: () => {
@@ -245,13 +247,13 @@ const refresh = mountButton(actionRoot, {
   },
 });
 const enableAll = mountButton(actionRoot, {
-  label: '全部启用',
+  label: t('全部启用'),
   variant: 'outline',
   size: 'sm',
   onClick: () => requestBulk(true),
 });
 const disableAll = mountButton(actionRoot, {
-  label: '全部关闭',
+  label: t('全部关闭'),
   variant: 'outline',
   size: 'sm',
   onClick: () => requestBulk(false),
@@ -263,11 +265,11 @@ const summarySecondary = el('p', 'sk-summary sk-summary-secondary');
 const translationRow = el('div', 'sk-translation-row');
 const translationSegment = el('div', 'sk-segment');
 translationSegment.setAttribute('role', 'group');
-translationSegment.setAttribute('aria-label', '技能说明语言');
-const translateButton = el('button', 'sk-segment-button', '翻译');
+translationSegment.setAttribute('aria-label', t('技能说明语言'));
+const translateButton = el('button', 'sk-segment-button', t('翻译'));
 translateButton.type = 'button';
 translateButton.setAttribute('aria-pressed', 'false');
-const originalButton = el('button', 'sk-segment-button', '原文');
+const originalButton = el('button', 'sk-segment-button', t('原文'));
 originalButton.type = 'button';
 originalButton.setAttribute('aria-pressed', 'true');
 translationSegment.append(translateButton, originalButton);
@@ -283,7 +285,7 @@ const groupsNote = el('div', 'sk-groups-note');
 const groupsRow = el('div', 'sk-groups-row');
 const groupsRoot = el('div', 'sk-groups');
 const groupSelectRoot = el('div', 'sk-group-select');
-const editGroups = el('button', 'sk-chip sk-groups-edit', '编辑分组');
+const editGroups = el('button', 'sk-chip sk-groups-edit', t('编辑分组'));
 editGroups.type = 'button';
 editGroups.setAttribute('aria-pressed', 'false');
 editGroups.addEventListener('click', () => {
@@ -296,8 +298,8 @@ const groupBarRoot = el('div');
 const conflictRoot = el('div');
 const search = el('input', 'sk-search') as HTMLInputElement;
 search.type = 'search';
-search.placeholder = '搜索名称或 ID';
-search.setAttribute('aria-label', '搜索技能');
+search.placeholder = t('搜索名称或 ID');
+search.setAttribute('aria-label', t('搜索技能'));
 search.addEventListener('input', () => {
   query = search.value.trim().toLowerCase();
   renderList();
@@ -305,10 +307,9 @@ search.addEventListener('input', () => {
 const listRoot = el('div', 'sk-list');
 listRoot.setAttribute('role', 'list');
 const footer = el('footer', 'sk-footer');
-footer.append(
-  el('p', '', '管理 ~/.config/opencode/skills。关闭会把技能入口改名为 .disabled；OpenCode 不再加载，模型也看不到。'),
-  el('p', '', '只显示这个目录里的文件技能。停用或卸载前先全部启用；技能更新后重新扫描。'),
-);
+const footerLine1 = el('p', '', t('管理 ~/.config/opencode/skills。关闭会把技能入口改名为 .disabled；OpenCode 不再加载，模型也看不到。'));
+const footerLine2 = el('p', '', t('只显示这个目录里的文件技能。停用或卸载前先全部启用；技能更新后重新扫描。'));
+footer.append(footerLine1, footerLine2);
 body.append(noticeRoot, groupsNote, groupsRow, groupEditor, groupBarRoot, conflictRoot, search, listRoot, footer);
 app.append(header, body);
 root.append(app);
@@ -339,7 +340,7 @@ let initialized = false;
 
 const groupSelect = mountSelect(groupSelectRoot, {
   value: 'all',
-  options: [{ id: 'all', label: '全部' }],
+  options: [{ id: 'all', label: t('全部') }],
   onChange: (id) => {
     selectedGroup = id === 'all' ? null : id;
     render();
@@ -347,7 +348,7 @@ const groupSelect = mountSelect(groupSelectRoot, {
 });
 const groupSelectTrigger = groupSelectRoot.querySelector<HTMLButtonElement>('.oc-sdk-trigger');
 if (groupSelectTrigger) {
-  groupSelectTrigger.setAttribute('aria-label', '分组筛选');
+  groupSelectTrigger.setAttribute('aria-label', t('分组筛选'));
   groupSelectTrigger.removeAttribute('aria-labelledby');
 }
 
@@ -361,10 +362,10 @@ const toneForState = (skill: SkillView): Tone => {
 };
 
 const stateText = (skill: SkillView): string => {
-  if (skill.state === 'conflict') return '冲突';
-  if (skill.state === 'mixed') return '混合';
-  if (skill.state === 'disabled') return '关闭';
-  return '开启';
+  if (skill.state === 'conflict') return t('冲突');
+  if (skill.state === 'mixed') return t('混合');
+  if (skill.state === 'disabled') return t('关闭');
+  return t('开启');
 };
 
 const badge = (text: string, tone: Tone | 'neutral' = 'neutral'): HTMLSpanElement => {
@@ -376,21 +377,21 @@ const badge = (text: string, tone: Tone | 'neutral' = 'neutral'): HTMLSpanElemen
 const conflictTitle = (kind: ConflictKind): string => {
   switch (kind) {
     case 'both':
-      return '入口和停用文件同时存在';
+      return t('入口和停用文件同时存在');
     case 'duplicate':
-      return '同 ID 多个入口';
+      return t('同 ID 多个入口');
     case 'invalid':
-      return 'frontmatter 无法解析';
+      return t('frontmatter 无法解析');
     case 'empty':
-      return '入口文件为空';
+      return t('入口文件为空');
     case 'read-error':
-      return '入口无法读取';
+      return t('入口无法读取');
     case 'manual':
-      return '仅手动调用';
+      return t('仅手动调用');
     case 'no-description':
-      return '没有 description';
+      return t('没有 description');
     default:
-      return '冲突';
+      return t('冲突');
   }
 };
 
@@ -413,20 +414,20 @@ const conflictItem = (conflict: ConflictView): HTMLElement => {
   const item = el('li', 'sk-conflict-item');
   item.dataset.tone = conflict.blocking ? 'error' : 'warning';
   const copy = el('div', 'sk-conflict-copy');
-  copy.append(el('strong', '', conflictTitle(conflict.kind)), el('p', 'sk-conflict-message', conflict.message));
+  copy.append(el('strong', '', conflictTitle(conflict.kind)), el('p', 'sk-conflict-message', serverText(conflict.message) ?? conflict.message));
   if (conflict.kind === 'both') {
-    copy.append(pathLine('启用入口', conflict.activePath) ?? el('span'));
-    copy.append(pathLine('停用入口', conflict.disabledPath) ?? el('span'));
+    copy.append(pathLine(t('启用入口'), conflict.activePath) ?? el('span'));
+    copy.append(pathLine(t('停用入口'), conflict.disabledPath) ?? el('span'));
   } else if (conflict.activePath ?? conflict.disabledPath) {
-    copy.append(pathLine('入口', conflict.activePath ?? conflict.disabledPath) ?? el('span'));
+    copy.append(pathLine(t('入口'), conflict.activePath ?? conflict.disabledPath) ?? el('span'));
   }
   item.append(copy);
 
   if (conflict.kind === 'both' && conflict.activePath) {
     const actions = el('div', 'sk-conflict-actions');
     actions.append(
-      actionButton('保留启用', () => void resolveConflict(conflict, 'enabled'), false, rootBlocked()),
-      actionButton('保留关闭', () => void resolveConflict(conflict, 'disabled'), false, rootBlocked()),
+      actionButton(t('保留启用'), () => void resolveConflict(conflict, 'enabled'), false, rootBlocked()),
+      actionButton(t('保留关闭'), () => void resolveConflict(conflict, 'disabled'), false, rootBlocked()),
     );
     item.append(actions);
   }
@@ -440,7 +441,7 @@ const renderConflicts = (): void => {
     ? [{
         kind: 'read-error',
         skillId: '',
-        message: `技能目录无法读取：${data.root.error}（${data.root.path}）`,
+        message: t('技能目录无法读取：{error}（{path}）', { error: serverText(data.root.error) ?? data.root.error, path: data.root.path }),
         activePath: null,
         disabledPath: null,
         blocking: true,
@@ -452,11 +453,11 @@ const renderConflicts = (): void => {
   if (blocking.length === 0 && warnings.length === 0) return;
 
   const card = el('section', 'sk-conflicts');
-  card.setAttribute('aria-label', '冲突检查');
+  card.setAttribute('aria-label', t('冲突检查'));
   const head = el('div', 'sk-section-head');
   head.append(
-    el('h2', 'sk-section-title', '冲突检查'),
-    el('span', 'sk-section-count', `${blocking.length} 项需要处理 · ${warnings.length} 项提示`),
+    el('h2', 'sk-section-title', t('冲突检查')),
+    el('span', 'sk-section-count', t('{blocking} 项需要处理 · {warnings} 项提示', { blocking: blocking.length, warnings: warnings.length })),
   );
   card.append(head);
 
@@ -467,7 +468,7 @@ const renderConflicts = (): void => {
   }
   if (warnings.length > 0) {
     const details = el('details', 'sk-warning-details');
-    details.append(el('summary', '', `提示（${warnings.length}）`));
+    details.append(el('summary', '', t('提示（{count}）', { count: warnings.length })));
     const list = el('ul', 'sk-conflict-list');
     for (const conflict of warnings) list.append(conflictItem(conflict));
     details.append(list);
@@ -482,13 +483,13 @@ const renderNotice = (): void => {
     const group = pendingOnlyGroup;
     const memberIds = new Set(group.skillIds);
     const others = data ? data.skills.filter((skill) => !memberIds.has(skill.id)).length : 0;
-    const node = el('div', 'sk-notice', `仅启用「${group.name}」：将关闭其他 ${others} 个技能。`);
+    const node = el('div', 'sk-notice', t('仅启用「{name}」：将关闭其他 {count} 个技能。', { name: group.name, count: others }));
     node.dataset.tone = 'warning';
     node.setAttribute('role', 'status');
     const actions = el('div', 'sk-notice-actions');
     actions.append(
-      actionButton('确认', () => void applyOnlyGroup(), true),
-      actionButton('取消', () => {
+      actionButton(t('确认'), () => void applyOnlyGroup(), true),
+      actionButton(t('取消'), () => {
         pendingOnlyGroup = null;
         render();
       }),
@@ -501,13 +502,13 @@ const renderNotice = (): void => {
     const count = data
       ? data.skills.filter((skill) => (pendingBulk ? skill.disabledPaths.length : skill.activePaths.length) > 0).length
       : 0;
-    const node = el('div', 'sk-notice', pendingBulk ? `将启用 ${count} 个技能。` : `将关闭 ${count} 个技能。`);
+    const node = el('div', 'sk-notice', pendingBulk ? t('将启用 {count} 个技能。', { count }) : t('将关闭 {count} 个技能。', { count }));
     node.dataset.tone = 'warning';
     node.setAttribute('role', 'status');
     const actions = el('div', 'sk-notice-actions');
     actions.append(
-      actionButton(pendingBulk ? '确认启用' : '确认关闭', () => void applyBulk(), true),
-      actionButton('取消', () => {
+      actionButton(pendingBulk ? t('确认启用') : t('确认关闭'), () => void applyBulk(), true),
+      actionButton(t('取消'), () => {
         pendingBulk = null;
         render();
       }),
@@ -543,7 +544,7 @@ const renderNotice = (): void => {
     return;
   }
   if (loading && !data) {
-    const node = el('div', 'sk-notice', '正在读取技能…');
+    const node = el('div', 'sk-notice', t('正在读取技能…'));
     node.dataset.tone = 'info';
     node.setAttribute('role', 'status');
     noticeRoot.append(node);
@@ -552,17 +553,21 @@ const renderNotice = (): void => {
 
 const renderSummary = (): void => {
   if (!data) {
-    summary.textContent = loading ? '正在读取技能…' : '尚未读取技能。';
-    summarySecondary.textContent = '关闭入口文档后，OpenCode 不会再发现该技能。';
+    summary.textContent = loading ? t('正在读取技能…') : t('尚未读取技能。');
+    summarySecondary.textContent = t('关闭入口文档后，OpenCode 不会再发现该技能。');
     return;
   }
-  summary.textContent = `模型可见 ${data.summary.advertised} / 共 ${data.summary.total} 个 · 约 ${data.summary.estimatedTokens.toLocaleString('zh-CN')} tokens/步`;
-  const parts = [`${data.summary.disabled} 个已关闭`];
-  if (data.summary.blockingConflicts > 0) parts.push(`${data.summary.blockingConflicts} 项阻塞冲突`);
-  else parts.push('无阻塞冲突');
-  if (data.summary.warnings > 0) parts.push(`${data.summary.warnings} 项提示`);
-  if (data.root.error) parts.push('技能目录无法读取');
-  summarySecondary.textContent = `${parts.join(' · ')}。估算不含内置和项目技能。`;
+  summary.textContent = t('模型可见 {advertised} / 共 {total} 个 · 约 {tokens} tokens/步', {
+    advertised: data.summary.advertised,
+    total: data.summary.total,
+    tokens: data.summary.estimatedTokens.toLocaleString(i18n.locale),
+  });
+  const parts = [t('{count} 个已关闭', { count: data.summary.disabled })];
+  if (data.summary.blockingConflicts > 0) parts.push(t('{count} 项阻塞冲突', { count: data.summary.blockingConflicts }));
+  else parts.push(t('无阻塞冲突'));
+  if (data.summary.warnings > 0) parts.push(t('{count} 项提示', { count: data.summary.warnings }));
+  if (data.root.error) parts.push(t('技能目录无法读取'));
+  summarySecondary.textContent = t('{parts}。估算不含内置和项目技能。', { parts: parts.join(' · ') });
 };
 
 const translationEntry = (skill: SkillView): TranslationEntry | null => {
@@ -589,9 +594,9 @@ const renderTranslationControls = (): void => {
   translateButton.disabled = translating;
   const total = data?.skills.length ?? 0;
   const translated = translatedCount();
-  if (translating) translationStatus.textContent = `翻译 ${translationProgress.done}/${translationProgress.total}…`;
-  else if (displayMode === 'translated') translationStatus.textContent = translated ? `${translated}/${total} 已翻译` : '点“翻译”生成中文';
-  else translationStatus.textContent = translated ? `${translated} 个有中文` : '';
+  if (translating) translationStatus.textContent = t('翻译 {done}/{total}…', { done: translationProgress.done, total: translationProgress.total });
+  else if (displayMode === 'translated') translationStatus.textContent = translated ? t('{translated}/{total} 已翻译', { translated, total }) : t('点“翻译”生成中文');
+  else translationStatus.textContent = translated ? t('{count} 个有中文', { count: translated }) : '';
 };
 
 const groupSkillIds = (group: SkillGroup): string[] =>
@@ -601,12 +606,12 @@ const groupState = (group: SkillGroup): string => {
   const skills = groupSkillIds(group)
     .map((id) => data?.skills.find((skill) => skill.id === id))
     .filter((skill): skill is SkillView => Boolean(skill));
-  if (skills.length === 0) return '无技能';
-  if (skills.some((skill) => skill.state === 'conflict')) return '有冲突';
+  if (skills.length === 0) return t('无技能');
+  if (skills.some((skill) => skill.state === 'conflict')) return t('有冲突');
   const enabled = skills.filter((skill) => skill.state === 'enabled').length;
-  if (enabled === skills.length) return '全开';
-  if (enabled === 0) return '全关';
-  return '部分';
+  if (enabled === skills.length) return t('全开');
+  if (enabled === 0) return t('全关');
+  return t('部分');
 };
 
 const focusGroupChip = (id: string): void => {
@@ -624,17 +629,17 @@ const makeGroupId = (): string => {
 const renderGroupsNote = (): void => {
   groupsNote.replaceChildren();
   if (groupsError) {
-    const node = el('div', 'sk-notice', `分组配置无法读取：${groupsError}`);
+    const node = el('div', 'sk-notice', t('分组配置无法读取：{error}', { error: groupsError }));
     node.dataset.tone = 'error';
     node.setAttribute('role', 'alert');
     const actions = el('div', 'sk-notice-actions');
-    actions.append(actionButton('重新读取', () => void reloadGroups(), false, groupsLoading));
+    actions.append(actionButton(t('重新读取'), () => void reloadGroups(), false, groupsLoading));
     node.append(actions);
     groupsNote.append(node);
     return;
   }
   if (groupsLoading || groups.length > 0 || !data || rootBlocked()) return;
-  groupsNote.append(el('div', 'sk-notice', '还没有分组。点「编辑分组」新建，或在编辑器里导入示例分组。'));
+  groupsNote.append(el('div', 'sk-notice', t('还没有分组。点「编辑分组」新建，或在编辑器里导入示例分组。')));
 };
 
 const startGroupDraft = (group: SkillGroup | null): void => {
@@ -687,25 +692,25 @@ const saveGroupDraft = async (): Promise<void> => {
   if (!draft || busy || groupsError) return;
   const name = draft.name.trim();
   if (!name) {
-    groupEditorError = '请输入分组名称。';
+    groupEditorError = t('请输入分组名称。');
     render();
     focusDraftName();
     return;
   }
   if (name.length > GROUP_NAME_MAX) {
-    groupEditorError = `分组名称不能超过 ${GROUP_NAME_MAX} 个字符。`;
+    groupEditorError = t('分组名称不能超过 {count} 个字符。', { count: GROUP_NAME_MAX });
     render();
     focusDraftName();
     return;
   }
   if (groups.some((group) => group.id !== draft.id && group.name.trim().toLowerCase() === name.toLowerCase())) {
-    groupEditorError = `已经有名为「${name}」的分组。`;
+    groupEditorError = t('已经有名为「{name}」的分组。', { name });
     render();
     focusDraftName();
     return;
   }
   if (draft.members.length === 0) {
-    groupEditorError = '分组至少需要一个成员。';
+    groupEditorError = t('分组至少需要一个成员。');
     render();
     return;
   }
@@ -724,8 +729,8 @@ const saveGroupDraft = async (): Promise<void> => {
     pendingOnlyGroup = null;
     const stored = groups.find((group) => group.id === id) ?? null;
     groupDraft = stored ? { id: stored.id, name: stored.name, members: [...stored.skillIds] } : null;
-    notice = { text: `已保存分组「${name}」。`, tone: 'success' };
-    void host.toast({ kind: 'success', message: `已保存分组「${name}」` }).catch(() => undefined);
+    notice = { text: t('已保存分组「{name}」。', { name }), tone: 'success' };
+    void host.toast({ kind: 'success', message: t('已保存分组「{name}」。', { name }) }).catch(() => undefined);
   } catch (error) {
     groupEditorError = describeError(error);
   } finally {
@@ -757,7 +762,7 @@ const confirmDeleteGroup = async (): Promise<void> => {
     const target = groups.find((group) => group.id === selectedGroup) ?? groups[0] ?? null;
     selectedGroup = target?.id ?? null;
     groupDraft = target ? { id: target.id, name: target.name, members: [...target.skillIds] } : null;
-    notice = { text: '已删除分组。', tone: 'success' };
+    notice = { text: t('已删除分组。'), tone: 'success' };
   } catch (error) {
     groupEditorError = describeError(error);
   } finally {
@@ -769,7 +774,7 @@ const confirmDeleteGroup = async (): Promise<void> => {
 const requestImportExamples = (): void => {
   if (busy || groupsLoading || groupsError) return;
   if (mergeExampleGroups(groups).added.length === 0) {
-    notice = { text: '示例分组的名称或 ID 都已存在，没有可导入的分组。', tone: 'info' };
+    notice = { text: t('示例分组的名称或 ID 都已存在，没有可导入的分组。'), tone: 'info' };
     render();
     return;
   }
@@ -783,7 +788,7 @@ const confirmImportExamples = async (): Promise<void> => {
   const { groups: next, added } = mergeExampleGroups(groups);
   pendingImportExamples = false;
   if (added.length === 0) {
-    notice = { text: '示例分组的名称或 ID 都已存在，没有可导入的分组。', tone: 'info' };
+    notice = { text: t('示例分组的名称或 ID 都已存在，没有可导入的分组。'), tone: 'info' };
     render();
     return;
   }
@@ -793,7 +798,7 @@ const confirmImportExamples = async (): Promise<void> => {
   try {
     groups = parseGroups(await request('POST', '/groups', { version: 1, groups: next }));
     groupsError = null;
-    notice = { text: `已导入 ${added.length} 个示例分组。`, tone: 'success' };
+    notice = { text: t('已导入 {count} 个示例分组。', { count: added.length }), tone: 'success' };
   } catch (error) {
     groupEditorError = describeError(error);
   } finally {
@@ -807,16 +812,16 @@ const renderGroupEditor = (): void => {
   if (!groupDraft) return;
   const draft = groupDraft;
   const card = el('section', 'sk-group-editor');
-  card.setAttribute('aria-label', '编辑分组');
+  card.setAttribute('aria-label', t('编辑分组'));
   const head = el('div', 'sk-section-head');
-  head.append(el('h2', 'sk-section-title', '编辑分组'), actionButton('关闭', closeGroupEditor, false, Boolean(busy)));
+  head.append(el('h2', 'sk-section-title', t('编辑分组')), actionButton(t('关闭'), closeGroupEditor, false, Boolean(busy)));
   card.append(head);
 
   const selectField = el('label', 'sk-field');
-  selectField.append(el('span', 'sk-field-label', '选择分组'));
+  selectField.append(el('span', 'sk-field-label', t('选择分组')));
   const select = el('select', 'sk-input');
-  select.setAttribute('aria-label', '选择分组');
-  const newOption = el('option', '', '新建分组');
+  select.setAttribute('aria-label', t('选择分组'));
+  const newOption = el('option', '', t('新建分组'));
   newOption.value = 'new';
   select.append(newOption);
   for (const group of groups) {
@@ -830,12 +835,12 @@ const renderGroupEditor = (): void => {
   selectField.append(select);
 
   const nameField = el('label', 'sk-field');
-  nameField.append(el('span', 'sk-field-label', '名称'));
+  nameField.append(el('span', 'sk-field-label', t('名称')));
   const nameInput = el('input', 'sk-input sk-group-name') as HTMLInputElement;
   nameInput.type = 'text';
   nameInput.value = draft.name;
   nameInput.maxLength = GROUP_NAME_MAX;
-  nameInput.placeholder = '例如：日常开发';
+  nameInput.placeholder = t('例如：日常开发');
   nameInput.autocomplete = 'off';
   nameInput.spellcheck = false;
   nameInput.disabled = Boolean(busy);
@@ -853,18 +858,18 @@ const renderGroupEditor = (): void => {
   card.append(selectField, nameField);
 
   const members = el('fieldset', 'sk-members');
-  const legend = el('legend', '', `成员（${draft.members.length}）`);
+  const legend = el('legend', '', t('成员（{count}）', { count: draft.members.length }));
   members.append(legend);
   const tools = el('div', 'sk-members-tools');
   tools.append(
-    actionButton('全选', () => {
+    actionButton(t('全选'), () => {
       if (!groupDraft) return;
       const existing = data?.skills.map((skill) => skill.id) ?? [];
       const missing = groupDraft.members.filter((id) => !existing.includes(id));
       groupDraft.members = [...existing, ...missing];
       render();
     }, false, Boolean(busy)),
-    actionButton('清空', () => {
+    actionButton(t('清空'), () => {
       if (!groupDraft) return;
       groupDraft.members = [];
       render();
@@ -885,7 +890,7 @@ const renderGroupEditor = (): void => {
       } else {
         groupDraft.members = groupDraft.members.filter((id) => id !== skill.id);
       }
-      legend.textContent = `成员（${groupDraft.members.length}）`;
+      legend.textContent = t('成员（{count}）', { count: groupDraft.members.length });
       groupEditorError = null;
     });
     const copy = el('span', 'sk-check-copy');
@@ -899,12 +904,12 @@ const renderGroupEditor = (): void => {
   const missing = draft.members.filter((id) => !existingIds.has(id));
   if (missing.length > 0) {
     const box = el('div', 'sk-missing');
-    box.append(el('span', 'sk-missing-label', '目录中缺失：'));
+    box.append(el('span', 'sk-missing-label', t('目录中缺失：')));
     for (const id of missing) {
       const chip = el('button', 'sk-missing-chip', `${id} ×`);
       chip.type = 'button';
       chip.disabled = Boolean(busy);
-      chip.title = '从分组移除这个缺失成员';
+      chip.title = t('从分组移除这个缺失成员');
       chip.addEventListener('click', () => {
         if (!groupDraft) return;
         groupDraft.members = groupDraft.members.filter((item) => item !== id);
@@ -923,21 +928,21 @@ const renderGroupEditor = (): void => {
   }
 
   const actions = el('div', 'sk-editor-actions');
-  if (draft.id) actions.append(actionButton('删除分组', requestDeleteGroup, false, Boolean(busy)));
+  if (draft.id) actions.append(actionButton(t('删除分组'), requestDeleteGroup, false, Boolean(busy)));
   actions.append(
-    actionButton('导入示例分组', requestImportExamples, false, Boolean(busy)),
-    actionButton(draft.id ? '保存更改' : '新建分组', () => void saveGroupDraft(), true, Boolean(busy)),
+    actionButton(t('导入示例分组'), requestImportExamples, false, Boolean(busy)),
+    actionButton(draft.id ? t('保存更改') : t('新建分组'), () => void saveGroupDraft(), true, Boolean(busy)),
   );
   card.append(actions);
 
   if (pendingDeleteGroup) {
     const confirm = el('div', 'sk-editor-confirm');
     confirm.dataset.tone = 'warning';
-    confirm.append(el('p', '', `删除分组「${draft.name.trim() || '未命名'}」？技能本身不会被删除。`));
+    confirm.append(el('p', '', t('删除分组「{name}」？技能本身不会被删除。', { name: draft.name.trim() || t('未命名') })));
     const buttons = el('div', 'sk-actions');
     buttons.append(
-      actionButton('确认删除', () => void confirmDeleteGroup(), true, Boolean(busy)),
-      actionButton('取消', () => { pendingDeleteGroup = false; render(); }, false, Boolean(busy)),
+      actionButton(t('确认删除'), () => void confirmDeleteGroup(), true, Boolean(busy)),
+      actionButton(t('取消'), () => { pendingDeleteGroup = false; render(); }, false, Boolean(busy)),
     );
     confirm.append(buttons);
     card.append(confirm);
@@ -947,24 +952,24 @@ const renderGroupEditor = (): void => {
     const importable = mergeExampleGroups(groups).added.length;
     const confirm = el('div', 'sk-editor-confirm');
     confirm.dataset.tone = 'warning';
-    confirm.append(el('p', '', `导入 ${importable} 个示例分组？已有同名或同 ID 的分组会跳过，当前分组不会被覆盖。`));
+    confirm.append(el('p', '', t('导入 {count} 个示例分组？已有同名或同 ID 的分组会跳过，当前分组不会被覆盖。', { count: importable })));
     const buttons = el('div', 'sk-actions');
     buttons.append(
-      actionButton('确认导入', () => void confirmImportExamples(), true, Boolean(busy)),
-      actionButton('取消', () => { pendingImportExamples = false; render(); }, false, Boolean(busy)),
+      actionButton(t('确认导入'), () => void confirmImportExamples(), true, Boolean(busy)),
+      actionButton(t('取消'), () => { pendingImportExamples = false; render(); }, false, Boolean(busy)),
     );
     confirm.append(buttons);
     card.append(confirm);
   }
 
-  card.append(el('p', 'sk-editor-hint', '分组只影响面板筛选和批量开关，不改变技能；成员顺序决定组内步骤号，保存后写入 groups.json。'));
+  card.append(el('p', 'sk-editor-hint', t('分组只影响面板筛选和批量开关，不改变技能；成员顺序决定组内步骤号，保存后写入 groups.json。')));
   groupEditor.append(card);
 };
 
 const renderGroups = (): void => {
   groupsRoot.replaceChildren();
   const total = data?.skills.length ?? 0;
-  const all = el('button', 'sk-chip', `全部 ${total}`);
+  const all = el('button', 'sk-chip', t('全部 {count}', { count: total }));
   all.type = 'button';
   all.dataset.group = 'all';
   all.setAttribute('aria-pressed', selectedGroup === null ? 'true' : 'false');
@@ -987,22 +992,22 @@ const renderGroups = (): void => {
     });
     groupsRoot.append(chip);
   }
-  editGroups.textContent = groupDraft ? '关闭编辑' : '编辑分组';
+  editGroups.textContent = groupDraft ? t('关闭编辑') : t('编辑分组');
   editGroups.setAttribute('aria-pressed', groupDraft ? 'true' : 'false');
   editGroups.disabled = groupsLoading || Boolean(groupsError) || Boolean(busy) || !data || rootBlocked();
   editGroups.title = groupsLoading
-    ? '正在读取分组…'
+    ? t('正在读取分组…')
     : groupsError
-      ? '分组配置无法读取，修复文件后重新读取'
+      ? t('分组配置无法读取，修复文件后重新读取')
       : !data
-        ? '技能列表尚未读取'
+        ? t('技能列表尚未读取')
         : rootBlocked()
-          ? '技能目录无法读取'
+          ? t('技能目录无法读取')
           : '';
   groupSelect.update({
     value: selectedGroup ?? 'all',
     options: [
-      { id: 'all', label: `全部 ${total}` },
+      { id: 'all', label: t('全部 {count}', { count: total }) },
       ...groups.map((group) => ({
         id: group.id,
         label: `${group.name} ${groupSkillIds(group).length}`,
@@ -1027,15 +1032,15 @@ const renderGroupBar = (): void => {
   const blocked = rootBlocked() || conflict || available.length === 0;
   const bar = el('div', 'sk-groupbar');
   const text = el('div', 'sk-groupbar-text');
-  text.append(el('strong', '', group.name), el('span', 'sk-group-state', `${available.length} 个 · ${groupState(group)}`));
-  if (missing.length > 0) text.append(el('p', 'sk-group-warning', `缺失：${missing.join('、')}`));
+  text.append(el('strong', '', group.name), el('span', 'sk-group-state', t('{count} 个 · {state}', { count: available.length, state: groupState(group) })));
+  if (missing.length > 0) text.append(el('p', 'sk-group-warning', t('缺失：{names}', { names: missing.join(', ') })));
   const actions = el('div', 'sk-groupbar-actions');
   actions.append(
-    actionButton('启用整组', () => void runGroup(group, true), false, blocked),
-    actionButton('关闭整组', () => void runGroup(group, false), false, blocked),
+    actionButton(t('启用整组'), () => void runGroup(group, true), false, blocked),
+    actionButton(t('关闭整组'), () => void runGroup(group, false), false, blocked),
   );
-  const only = actionButton('仅启用本组', () => requestOnlyGroup(group), false, blocked || missing.length > 0);
-  if (missing.length > 0) only.title = '分组里有缺失技能，先处理后再仅启用本组';
+  const only = actionButton(t('仅启用本组'), () => requestOnlyGroup(group), false, blocked || missing.length > 0);
+  if (missing.length > 0) only.title = t('分组里有缺失技能，先处理后再仅启用本组');
   actions.append(only);
   bar.append(text, actions);
   groupBarRoot.append(bar);
@@ -1056,10 +1061,10 @@ const runGroup = async (group: SkillGroup, enabled: boolean): Promise<void> => {
       disable: enabled ? [] : ids,
     }));
     notice = {
-      text: `已${enabled ? '启用' : '关闭'}「${group.name}」的 ${ids.length} 个技能。`,
+      text: enabled ? t('已启用「{name}」的 {count} 个技能。', { name: group.name, count: ids.length }) : t('已关闭「{name}」的 {count} 个技能。', { name: group.name, count: ids.length }),
       tone: 'success',
     };
-    void host.toast({ kind: 'success', message: `${enabled ? '已启用' : '已关闭'}「${group.name}」` }).catch(() => undefined);
+    void host.toast({ kind: 'success', message: enabled ? t('已启用「{name}」', { name: group.name }) : t('已关闭「{name}」', { name: group.name }) }).catch(() => undefined);
   } catch (error) {
     notice = { text: describeError(error), tone: 'error' };
     busy = null;
@@ -1091,7 +1096,7 @@ const applyOnlyGroup = async (): Promise<void> => {
   const enable = groupSkillIds(group);
   const missing = group.skillIds.filter((id) => !enable.includes(id));
   if (enable.length === 0 || missing.length > 0) {
-    notice = { text: '分组里有缺失技能，未执行。', tone: 'error' };
+    notice = { text: t('分组里有缺失技能，未执行。'), tone: 'error' };
     render();
     return;
   }
@@ -1103,10 +1108,10 @@ const applyOnlyGroup = async (): Promise<void> => {
   try {
     data = parseResponse(await request('POST', '/skills/batch', { enable, disable }));
     notice = {
-      text: `已仅启用「${group.name}」，关闭其他 ${disable.length} 个技能。`,
+      text: t('已仅启用「{name}」，关闭其他 {count} 个技能。', { name: group.name, count: disable.length }),
       tone: 'success',
     };
-    void host.toast({ kind: 'success', message: `已仅启用「${group.name}」` }).catch(() => undefined);
+    void host.toast({ kind: 'success', message: t('已仅启用「{name}」', { name: group.name }) }).catch(() => undefined);
   } catch (error) {
     notice = { text: describeError(error), tone: 'error' };
     busy = null;
@@ -1136,8 +1141,8 @@ const skillAction = (skill: SkillView): HTMLElement => {
   const blocked = rootBlocked();
 
   if (skill.state === 'conflict') {
-    note.textContent = blocked ? '目录无法读取' : '先处理冲突';
-    const button = el('button', 'sk-inline-button', '处理冲突');
+    note.textContent = blocked ? t('目录无法读取') : t('先处理冲突');
+    const button = el('button', 'sk-inline-button', t('处理冲突'));
     button.type = 'button';
     button.disabled = Boolean(busy) || blocked;
     button.addEventListener('click', () => {
@@ -1149,13 +1154,13 @@ const skillAction = (skill: SkillView): HTMLElement => {
   }
 
   if (skill.state === 'mixed') {
-    note.textContent = blocked ? '目录无法读取' : '部分入口关闭';
+    note.textContent = blocked ? t('目录无法读取') : t('部分入口关闭');
     const actions = el('div', 'sk-mini-actions');
-    const on = el('button', 'sk-inline-button', '全部启用');
+    const on = el('button', 'sk-inline-button', t('全部启用'));
     on.type = 'button';
     on.disabled = Boolean(busy) || blocked;
     on.addEventListener('click', () => void toggleSkill(skill, true));
-    const off = el('button', 'sk-inline-button', '全部关闭');
+    const off = el('button', 'sk-inline-button', t('全部关闭'));
     off.type = 'button';
     off.disabled = Boolean(busy) || blocked;
     off.addEventListener('click', () => void toggleSkill(skill, false));
@@ -1169,7 +1174,7 @@ const skillAction = (skill: SkillView): HTMLElement => {
   control.type = 'button';
   control.setAttribute('role', 'switch');
   control.setAttribute('aria-checked', checked ? 'true' : 'false');
-  control.setAttribute('aria-label', `${checked ? '关闭' : '启用'} ${skill.name}`);
+  control.setAttribute('aria-label', `${checked ? t('关闭') : t('开启')} ${skill.name}`);
   control.dataset.skillId = skill.id;
   control.disabled = Boolean(busy) || blocked;
   control.append(el('span', 'sk-thumb'));
@@ -1178,8 +1183,8 @@ const skillAction = (skill: SkillView): HTMLElement => {
     void toggleSkill(skill, !checked);
   });
 
-  if (checked) note.textContent = blocked ? '目录无法读取' : skill.advertised ? '模型可见' : '模型不可见';
-  else note.textContent = blocked ? '目录无法读取' : '入口已关闭';
+  if (checked) note.textContent = blocked ? t('目录无法读取') : skill.advertised ? t('模型可见') : t('模型不可见');
+  else note.textContent = blocked ? t('目录无法读取') : t('入口已关闭');
   holder.append(note, control);
   return holder;
 };
@@ -1192,8 +1197,8 @@ const renderSkill = (skill: SkillView, step = 0): HTMLElement => {
   const head = el('div', 'sk-skill-head');
   if (step > 0) {
     const marker = el('span', 'sk-step', String(step));
-    marker.title = `第 ${step} 步`;
-    marker.setAttribute('aria-label', `第 ${step} 步`);
+    marker.title = t('第 {step} 步', { step });
+    marker.setAttribute('aria-label', t('第 {step} 步', { step }));
     head.append(marker);
   }
   const translated = displayMode === 'translated' ? translationEntry(skill) : null;
@@ -1201,10 +1206,10 @@ const renderSkill = (skill: SkillView, step = 0): HTMLElement => {
   const meta = el('div', 'sk-meta');
   if (translated) meta.append(el('span', 'sk-original-name', skill.name));
   meta.append(el('code', 'sk-id', skill.id));
-  const description = el('p', 'sk-desc', translated?.descriptionZh || skill.description || '无 description，模型不会自动选用。');
+  const description = el('p', 'sk-desc', translated?.descriptionZh || skill.description || t('无 description，模型不会自动选用。'));
   main.append(head, meta, description);
   if (skill.warnings.length > 0) {
-    const warning = el('p', 'sk-warn', skill.warnings.slice(0, 2).join(' · '));
+    const warning = el('p', 'sk-warn', skill.warnings.slice(0, 2).map((item) => serverText(item) ?? item).join(' · '));
     main.append(warning);
   }
   row.append(main, skillAction(skill));
@@ -1236,10 +1241,10 @@ const renderList = (): void => {
   if (skills.length === 0) {
     const empty = el('div', 'sk-empty');
     empty.append(
-      el('h2', '', data.skills.length === 0 ? '没有发现技能' : group ? '这个分组没有可用技能' : '没有匹配的技能'),
+      el('h2', '', data.skills.length === 0 ? t('没有发现技能') : group ? t('这个分组没有可用技能') : t('没有匹配的技能')),
       el('p', '', data.skills.length === 0
-        ? '检查 ~/.config/opencode/skills 是否存在，或重新扫描。'
-        : group ? '检查分组里的技能是否被移除。' : '换一个搜索词。'),
+        ? t('检查 ~/.config/opencode/skills 是否存在，或重新扫描。')
+        : group ? t('检查分组里的技能是否被移除。') : t('换一个搜索词。')),
     );
     listRoot.append(empty);
     return;
@@ -1261,7 +1266,7 @@ const render = (): void => {
   renderGroupBar();
   renderConflicts();
   renderList();
-  refresh.update({ label: loading ? '读取中…' : '重新扫描', loading, disabled: loading || Boolean(busy) });
+  refresh.update({ label: loading ? t('读取中…') : t('重新扫描'), loading, disabled: loading || Boolean(busy) });
   const blocked = rootBlocked();
   enableAll.update({ disabled: loading || Boolean(busy) || !data || blocked });
   disableAll.update({ disabled: loading || Boolean(busy) || !data || blocked });
@@ -1304,7 +1309,7 @@ const translateMissing = async (): Promise<void> => {
   if (!data || translating) return;
   const pending = data.skills.filter((skill) => !translationEntry(skill));
   if (pending.length === 0) {
-    notice = { text: '中文说明已是最新。', tone: 'success' };
+    notice = { text: t('中文说明已是最新。'), tone: 'success' };
     render();
     return;
   }
@@ -1359,11 +1364,11 @@ const translateMissing = async (): Promise<void> => {
     translating = false;
     if (!aborted) {
       if (translationError) {
-        notice = { text: `翻译完成，但缓存保存失败：${translationError}`, tone: 'warning' };
+        notice = { text: t('翻译完成，但缓存保存失败：{error}', { error: translationError }), tone: 'warning' };
       } else if (failed > 0) {
-        notice = { text: `已翻译 ${done} 个技能，${failed} 个失败；可再点“翻译”重试。`, tone: 'warning' };
+        notice = { text: t('已翻译 {done} 个技能，{failed} 个失败；可再点“翻译”重试。', { done, failed }), tone: 'warning' };
       } else {
-        notice = { text: `已翻译 ${done} 个技能。`, tone: 'success' };
+        notice = { text: t('已翻译 {done} 个技能。', { done }), tone: 'success' };
       }
     }
     render();
@@ -1431,10 +1436,10 @@ const toggleSkill = async (skill: SkillView, enabled: boolean): Promise<void> =>
   try {
     data = parseResponse(await request('POST', '/skills/toggle', { id: skill.id, enabled }));
     notice = {
-      text: enabled ? `已启用 ${skill.name}。` : `已关闭 ${skill.name}；OpenCode 下一次扫描后不再发现它。`,
+      text: enabled ? t('已启用 {name}。', { name: skill.name }) : t('已关闭 {name}；OpenCode 下一次扫描后不再发现它。', { name: skill.name }),
       tone: 'success',
     };
-    void host.toast({ kind: 'success', message: enabled ? `已启用 ${skill.name}` : `已关闭 ${skill.name}` }).catch(() => undefined);
+    void host.toast({ kind: 'success', message: enabled ? t('已启用 {name}', { name: skill.name }) : t('已关闭 {name}', { name: skill.name }) }).catch(() => undefined);
   } catch (error) {
     notice = { text: describeError(error), tone: 'error' };
     busy = null;
@@ -1461,10 +1466,12 @@ const resolveConflict = async (conflict: ConflictView, keep: 'enabled' | 'disabl
       : null;
     data = parseResponse(raw);
     notice = {
-      text: `已保留${keep === 'enabled' ? '启用' : '关闭'}入口${backupPath ? `；旧停用文件备份为 ${backupPath}` : ''}。`,
+      text: keep === 'enabled'
+        ? t('已保留启用入口{suffix}。', { suffix: backupPath ? t('；旧停用文件备份为 {path}', { path: backupPath }) : '' })
+        : t('已保留关闭入口{suffix}。', { suffix: backupPath ? t('；旧停用文件备份为 {path}', { path: backupPath }) : '' }),
       tone: 'success',
     };
-    void host.toast({ kind: 'success', message: '入口冲突已处理' }).catch(() => undefined);
+    void host.toast({ kind: 'success', message: t('入口冲突已处理') }).catch(() => undefined);
   } catch (error) {
     notice = { text: describeError(error), tone: 'error' };
     busy = null;
@@ -1501,10 +1508,10 @@ const applyBulk = async (): Promise<void> => {
       : [];
     data = parseResponse(raw);
     notice = {
-      text: `${enabled ? '已启用' : '已关闭'} ${changed.length} 个技能。`,
+      text: enabled ? t('已启用 {count} 个技能。', { count: changed.length }) : t('已关闭 {count} 个技能。', { count: changed.length }),
       tone: 'success',
     };
-    void host.toast({ kind: 'success', message: `${enabled ? '已启用' : '已关闭'} ${changed.length} 个技能` }).catch(() => undefined);
+    void host.toast({ kind: 'success', message: enabled ? t('已启用 {count} 个技能。', { count: changed.length }) : t('已关闭 {count} 个技能。', { count: changed.length }) }).catch(() => undefined);
   } catch (error) {
     notice = { text: describeError(error), tone: 'error' };
     busy = null;
@@ -1516,16 +1523,43 @@ const applyBulk = async (): Promise<void> => {
   render();
 };
 
+const localize = (): void => {
+  app.setAttribute('aria-label', t('技能开关'));
+  title.textContent = t('技能开关');
+  translationSegment.setAttribute('aria-label', t('技能说明语言'));
+  translateButton.textContent = t('翻译');
+  originalButton.textContent = t('原文');
+  enableAll.update({ label: t('全部启用') });
+  disableAll.update({ label: t('全部关闭') });
+  search.placeholder = t('搜索名称或 ID');
+  search.setAttribute('aria-label', t('搜索技能'));
+  footerLine1.textContent = t('管理 ~/.config/opencode/skills。关闭会把技能入口改名为 .disabled；OpenCode 不再加载，模型也看不到。');
+  footerLine2.textContent = t('只显示这个目录里的文件技能。停用或卸载前先全部启用；技能更新后重新扫描。');
+  groupSelectTrigger?.setAttribute('aria-label', t('分组筛选'));
+  editGroups.textContent = groupDraft ? t('关闭编辑') : t('编辑分组');
+  editGroups.setAttribute('aria-pressed', groupDraft ? 'true' : 'false');
+  render();
+};
+
 host.onReady((context) => {
   applyHostReady(context, document.documentElement);
-  document.documentElement.lang = context.locale.startsWith('zh') ? context.locale : 'zh-CN';
+  const changed = i18n.setLocale(context.locale);
+  applyDocumentLanguage(i18n);
+  document.title = t('技能开关');
   if (initialized) {
-    render();
+    if (!changed) { render(); return; }
+    notice = null;
+    groupEditorError = null;
+    localize();
+    void loadAll(true);
+    void reloadGroups(true);
     return;
   }
   initialized = true;
+  if (changed) localize();
   void loadAll(true);
   void reloadGroups(true);
 });
 
+document.title = t('技能开关');
 render();

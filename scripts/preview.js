@@ -1,4 +1,5 @@
 const params = new URLSearchParams(location.search);
+const locale = params.get('locale') || 'zh-CN';
 let dark = params.get('theme') === 'dark';
 let width = Number(params.get('width') || 400);
 let mode = params.get('state') || 'clean';
@@ -194,7 +195,7 @@ const ready = () => {
     type: 'ready',
     payload: {
       theme: { mode: dark ? 'dark' : 'light', tokens: tokens(dark) },
-      locale: 'zh-CN',
+      locale,
       directory: null,
       session: null,
       surface: 'panel',

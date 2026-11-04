@@ -16,6 +16,7 @@ English | [简体中文](#简体中文)
 - Group tabs on wide panels, and a host-native group dropdown below 380px so every group stays visible in a narrow sidebar.
 - Fresh installs start with no groups. Create, rename or delete your own, or import six example groups on demand; existing names and IDs are never overwritten. Configuration is stored at `~/.config/openchamber/skills-manager/groups.json` with `0600` permissions.
 
+- Panel and Work Status copy follow the host language (Simplified Chinese or English).
 ### Screenshot
 
 <img src="docs/screenshots/panel.jpg" alt="Skills Manager panel" width="420">
@@ -32,13 +33,13 @@ https://github.com/chenyuhao0628/openchamber-skills
 
 Requires OpenChamber **2.4.0 or newer**. The `model` capability is used only for the optional translation action.
 
-> Click **Enable all** before disabling or uninstalling the extension. The panel UI is currently Chinese. The full Chinese documentation is below.
+> Click **Enable all** before disabling or uninstalling the extension. The panel and Work Status copy follow the host language (Simplified Chinese or English). The full Chinese documentation is below.
 
 ---
 
 ## 简体中文
 
-当前版本 **0.3.2**，核对日期 **2026-11-03**。只管理 OpenCode 全局技能目录 `~/.config/opencode/skills`：按入口文档启停、中文翻译、按可编辑的联动分组批量开关，并检查入口冲突。不改写技能正文，不新增技能，不碰其他 agent 的技能目录。
+当前版本 **0.3.3**，核对日期 **2026-11-04**。面板文案跟随宿主语言在简体中文和英文间切换。只管理 OpenCode 全局技能目录 `~/.config/opencode/skills`：按入口文档启停、中文翻译、按可编辑的联动分组批量开关，并检查入口冲突。不改写技能正文，不新增技能，不碰其他 agent 的技能目录。
 
 ## 安装
 
