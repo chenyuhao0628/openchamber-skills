@@ -32,7 +32,7 @@ In OpenChamber, open **Settings → Extensions → Add extension** and paste:
 https://github.com/chenyuhao0628/openchamber-skills
 ```
 
-Requires OpenChamber **2.4.0 or newer**. The `model` capability is used only for the optional translation action.
+Requires OpenChamber **2.4.0 or newer**; **2.7.0** keeps a translation that finishes after the panel closes and merges it on the next open. The `model` capability is used only for the optional translation action.
 
 > Click **Enable all** before disabling or uninstalling the extension. The panel and Work Status copy follow the host language (Simplified Chinese or English). The full Chinese documentation is below.
 
