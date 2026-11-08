@@ -137,6 +137,8 @@ const messages: Messages = {
   '已关闭 {count} 个技能。': 'Skills disabled: {count}.',
   '中文说明已是最新。': 'Chinese descriptions are up to date.',
   '翻译完成，但缓存保存失败：{error}': 'Translation finished, but saving the cache failed: {error}',
+  '上次未完成的翻译已补全。': 'The previous unfinished translation was completed.',
+  '翻译已补全，但缓存保存失败：{error}': 'Translation was completed, but saving the cache failed: {error}',
   '已翻译 {done} 个技能，{failed} 个失败；可再点“翻译”重试。': 'Translated: {done}; failed: {failed}. Click "Translate" to retry.',
   '已翻译 {done} 个技能。': 'Translated skills: {done}.',
   '服务返回的技能目录信息不正确。': 'The service returned invalid skill directory information.',

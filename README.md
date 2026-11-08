@@ -16,6 +16,7 @@ English | [简体中文](#简体中文)
 - Group tabs on wide panels, and a host-native group dropdown below 380px so every group stays visible in a narrow sidebar.
 - Fresh installs start with no groups. Create, rename or delete your own, or import six example groups on demand; existing names and IDs are never overwritten. Configuration is stored at `~/.config/openchamber/skills-manager/groups.json` with `0600` permissions.
 
+- On OpenChamber 2.7.0, a translation that finishes after the panel closes is kept and merged on the next open.
 - Panel and Work Status copy follow the host language (Simplified Chinese or English).
 ### Screenshot
 
@@ -39,7 +40,7 @@ Requires OpenChamber **2.4.0 or newer**. The `model` capability is used only for
 
 ## 简体中文
 
-当前版本 **0.3.3**，核对日期 **2026-11-04**。面板文案跟随宿主语言在简体中文和英文间切换。只管理 OpenCode 全局技能目录 `~/.config/opencode/skills`：按入口文档启停、中文翻译、按可编辑的联动分组批量开关，并检查入口冲突。不改写技能正文，不新增技能，不碰其他 agent 的技能目录。
+当前版本 **0.3.4**，核对日期 **2026-11-08**。面板文案跟随宿主语言在简体中文和英文间切换。只管理 OpenCode 全局技能目录 `~/.config/opencode/skills`：按入口文档启停、中文翻译、按可编辑的联动分组批量开关，并检查入口冲突。不改写技能正文，不新增技能，不碰其他 agent 的技能目录。
 
 ## 安装
 
@@ -49,7 +50,7 @@ Requires OpenChamber **2.4.0 or newer**. The `model` capability is used only for
 https://github.com/chenyuhao0628/openchamber-skills
 ```
 
-0.2.0 新增“模型调用”能力用于中文翻译；0.2.1 修正清单位置；0.3.0 增加可编辑分组并持久化到本地配置；0.3.1 把窄栏的分组标签收成下拉框，避免被裁切；0.3.2 首次安装不再预置作者分组，示例分组改为手动导入。更新或重装 0.3.2 时仍会出现模型调用权限提示。
+0.2.0 新增“模型调用”能力用于中文翻译；0.2.1 修正清单位置；0.3.0 增加可编辑分组并持久化到本地配置；0.3.1 把窄栏的分组标签收成下拉框，避免被裁切；0.3.2 首次安装不再预置作者分组，示例分组改为手动导入；0.3.4 在 OpenChamber 2.7.0 上接住面板关闭后到达的翻译结果，下次打开自动合并并保存。更新或重装时仍会出现模型调用权限提示。
 
 从本地目录安装（开发时）：
 
@@ -78,6 +79,7 @@ OpenCode 的扫描器只认名为 `SKILL.md` 的文件和源根目录的 `*.md`�
 - 译文缓存到 `~/.config/openchamber/skills-manager/translations.json`（0600）。技能内容变化后 hash 不匹配，会显示原文并允许重新翻译。
 - 默认只翻名称和描述，不翻完整 SKILL.md；按下“翻译”才会调用模型，分批进行并显示进度。
 - 翻译失败保留原文并提示原因；不会阻塞技能开关。
+- 在 OpenChamber 2.7.0 上，翻译到一半关闭或切换面板后，宿主会保留已发出的结果；下次打开面板会校验原请求中的名称/描述是否仍与当前技能一致，再合并写入缓存，并提示“上次未完成的翻译已补全”。旧宿主没有该能力时行为不变，也不新增权限。
 - 需要“模型调用”能力；使用 OpenChamber 已配置的小模型，不新增 API Key。
 
 ## 联动分组

@@ -1,4 +1,5 @@
 import { connectHost, HostRequestError } from '@openchamber/sdk';
+import type { LateGenerateResult } from '@openchamber/sdk';
 import { applyHostReady, mountButton, mountSelect } from '@openchamber/sdk/ui';
 import type {
   ConflictKind,
@@ -321,6 +322,7 @@ let translationPreferenceSet = false;
 let translating = false;
 let translationProgress = { done: 0, total: 0 };
 let translationError: string | null = null;
+let pendingLateTranslations: LateGenerateResult[] = [];
 let loading = false;
 let loadError: string | null = null;
 let notice: Notice | null = null;
@@ -1305,6 +1307,72 @@ const saveTranslations = async (): Promise<void> => {
   }
 };
 
+const parseTranslationPrompt = (prompt: string): Map<string, { name: string; description: string }> => {
+  const requested = new Map<string, { name: string; description: string }>();
+  try {
+    const items: unknown = JSON.parse(prompt);
+    if (!Array.isArray(items)) return requested;
+    for (const item of items) {
+      if (!item || typeof item !== 'object') continue;
+      const value = item as Record<string, unknown>;
+      if (
+        typeof value.id === 'string' &&
+        typeof value.name === 'string' &&
+        typeof value.description === 'string'
+      ) {
+        requested.set(value.id, { name: value.name, description: value.description });
+      }
+    }
+  } catch {
+    // A prompt we did not build; the current skill is the only fallback.
+  }
+  return requested;
+};
+
+const applyLateTranslation = async (late: LateGenerateResult): Promise<void> => {
+  if (late.request.system !== TRANSLATION_SYSTEM) return;
+  if (!late.ok) {
+    if (!translating) {
+      translationError = late.error;
+      notice = { text: late.error, tone: 'error' };
+      render();
+    }
+    return;
+  }
+  if (!data) {
+    if (pendingLateTranslations.length < 8) pendingLateTranslations.push(late);
+    return;
+  }
+  const requested = parseTranslationPrompt(late.request.prompt);
+  const parsed = parseTranslationResponse(late.result.text);
+  let changed = false;
+  for (const item of parsed) {
+    const skill = data.skills.find((candidate) => candidate.id === item.id);
+    if (!skill) continue;
+    const original = requested.get(skill.id);
+    if (original && (original.name !== skill.name || original.description !== skill.description)) continue;
+    translations.entries[skill.id] = {
+      hash: skill.contentHash,
+      nameZh: item.nameZh,
+      descriptionZh: item.descriptionZh,
+      updatedAt: Date.now(),
+    };
+    changed = true;
+  }
+  if (!changed) return;
+  if (!translationPreferenceSet) {
+    displayMode = 'translated';
+    translationPreferenceSet = true;
+  }
+  await saveTranslations();
+  if (!translating) {
+    notice = translationError
+      ? { text: t('翻译已补全，但缓存保存失败：{error}', { error: translationError }), tone: 'warning' }
+      : { text: t('上次未完成的翻译已补全。'), tone: 'success' };
+  }
+  render();
+};
+
 const translateMissing = async (): Promise<void> => {
   if (!data || translating) return;
   const pending = data.skills.filter((skill) => !translationEntry(skill));
@@ -1424,6 +1492,11 @@ const loadAll = async (showLoading = false): Promise<void> => {
   }
   loading = false;
   render();
+  if (data && pendingLateTranslations.length > 0) {
+    const pending = pendingLateTranslations;
+    pendingLateTranslations = [];
+    for (const late of pending) void applyLateTranslation(late);
+  }
 };
 
 const toggleSkill = async (skill: SkillView, enabled: boolean): Promise<void> => {
@@ -1540,6 +1613,10 @@ const localize = (): void => {
   editGroups.setAttribute('aria-pressed', groupDraft ? 'true' : 'false');
   render();
 };
+
+host.onLateGenerateResult((late) => {
+  void applyLateTranslation(late);
+});
 
 host.onReady((context) => {
   applyHostReady(context, document.documentElement);
