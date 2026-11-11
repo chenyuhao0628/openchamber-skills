@@ -88,6 +88,17 @@ export const mergeExampleGroups = (existing: SkillGroup[]): { groups: SkillGroup
   return { groups: [...existing, ...added], added };
 };
 
+export const moveGroupMember = (members: readonly string[], index: number, delta: -1 | 1): string[] => {
+  const targetIndex = index + delta;
+  if (index < 0 || index >= members.length || targetIndex < 0 || targetIndex >= members.length) {
+    return [...members];
+  }
+  const next = [...members];
+  const [moved] = next.splice(index, 1);
+  next.splice(targetIndex, 0, moved);
+  return next;
+};
+
 export const normalizeGroupsFile = (value: unknown): GroupsFile => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new GroupFileError('分组配置格式不正确');

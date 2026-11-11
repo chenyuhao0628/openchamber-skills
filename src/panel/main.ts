@@ -1,6 +1,15 @@
 import { connectHost, HostRequestError } from '@openchamber/sdk';
 import type { LateGenerateResult } from '@openchamber/sdk';
-import { applyHostReady, mountButton, mountSelect } from '@openchamber/sdk/ui';
+import {
+  applyHostReady,
+  mountButton,
+  mountMenu,
+  mountProgress,
+  mountSearchField,
+  mountSelect,
+  mountTabs,
+  type ProgressHandle,
+} from '@openchamber/sdk/ui';
 import type {
   ConflictKind,
   ConflictView,
@@ -15,10 +24,18 @@ import type {
 import {
   GROUP_NAME_MAX,
   mergeExampleGroups,
+  moveGroupMember,
   normalizeGroupsFile,
   type SkillGroup,
 } from '../shared/groups.ts';
+import {
+  filterAndSortSkills,
+  matchesSkillQuery,
+  type SkillSortMode,
+  type SkillStateFilter,
+} from '../shared/filter.ts';
 import { TRANSLATION_SYSTEM, buildTranslationPrompt, parseTranslationResponse } from './translate.ts';
+import { installScrollbarActivity } from './scrollbar.ts';
 import css from './style.css';
 import native from '../../ui/native.css';
 import { applyDocumentLanguage, i18n, serverText } from './i18n.ts';
@@ -27,6 +44,7 @@ const { t } = i18n;
 const host = connectHost({ requestTimeoutMs: 30_000 });
 const root = document.querySelector<HTMLElement>('#root');
 if (!root) throw new Error('Missing #root');
+installScrollbarActivity(document);
 const style = document.createElement('style');
 style.textContent = native + css;
 document.head.append(style);
@@ -232,7 +250,7 @@ const describeGroupsError = (error: unknown): string =>
     ? t('本地服务版本过旧，请在扩展设置中禁用再启用“技能开关”。')
     : describeError(error);
 
-const app = el('main', 'ext sk');
+const app = el('main', 'ext ext-container sk');
 app.setAttribute('aria-label', t('技能开关'));
 const header = el('header', 'sk-header');
 const titleRow = el('div', 'sk-title-row');
@@ -264,19 +282,15 @@ const summary = el('p', 'sk-summary');
 const summarySecondary = el('p', 'sk-summary sk-summary-secondary');
 
 const translationRow = el('div', 'sk-translation-row');
-const translationSegment = el('div', 'sk-segment');
-translationSegment.setAttribute('role', 'group');
-translationSegment.setAttribute('aria-label', t('技能说明语言'));
-const translateButton = el('button', 'sk-segment-button', t('翻译'));
-translateButton.type = 'button';
-translateButton.setAttribute('aria-pressed', 'false');
-const originalButton = el('button', 'sk-segment-button', t('原文'));
-originalButton.type = 'button';
-originalButton.setAttribute('aria-pressed', 'true');
-translationSegment.append(translateButton, originalButton);
+const translationControls = el('div', 'sk-translation-controls');
+const translationTabsSlot = el('div', 'sk-translation-tabs');
+translationTabsSlot.setAttribute('aria-label', t('技能说明语言'));
+const translateMissingSlot = el('div');
+translationControls.append(translationTabsSlot, translateMissingSlot);
+const translationProgressSlot = el('div', 'sk-translation-progress');
 const translationStatus = el('span', 'sk-translation-status');
 translationStatus.setAttribute('aria-live', 'polite');
-translationRow.append(translationSegment, translationStatus);
+translationRow.append(translationControls, translationProgressSlot, translationStatus);
 header.append(titleRow, summary, summarySecondary, translationRow);
 
 const body = el('div', 'sk-body');
@@ -297,21 +311,20 @@ groupsRow.append(groupsRoot, groupSelectRoot, editGroups);
 const groupEditor = el('div', 'sk-group-editor-root');
 const groupBarRoot = el('div');
 const conflictRoot = el('div');
-const search = el('input', 'sk-search') as HTMLInputElement;
-search.type = 'search';
-search.placeholder = t('搜索名称或 ID');
-search.setAttribute('aria-label', t('搜索技能'));
-search.addEventListener('input', () => {
-  query = search.value.trim().toLowerCase();
-  renderList();
-});
+const toolbar = el('div', 'sk-toolbar');
+const searchSlot = el('div', 'sk-search-slot');
+const toolbarSelects = el('div', 'sk-toolbar-selects');
+const filterSlot = el('div', 'sk-filter-slot');
+const sortSlot = el('div', 'sk-sort-slot');
+toolbarSelects.append(filterSlot, sortSlot);
+toolbar.append(searchSlot, toolbarSelects);
 const listRoot = el('div', 'sk-list');
 listRoot.setAttribute('role', 'list');
 const footer = el('footer', 'sk-footer');
 const footerLine1 = el('p', '', t('管理 ~/.config/opencode/skills。关闭会把技能入口改名为 .disabled；OpenCode 不再加载，模型也看不到。'));
 const footerLine2 = el('p', '', t('只显示这个目录里的文件技能。停用或卸载前先全部启用；技能更新后重新扫描。'));
 footer.append(footerLine1, footerLine2);
-body.append(noticeRoot, groupsNote, groupsRow, groupEditor, groupBarRoot, conflictRoot, search, listRoot, footer);
+body.append(noticeRoot, groupsNote, groupsRow, groupEditor, groupBarRoot, conflictRoot, toolbar, listRoot, footer);
 app.append(header, body);
 root.append(app);
 
@@ -321,6 +334,7 @@ let displayMode: 'original' | 'translated' = 'original';
 let translationPreferenceSet = false;
 let translating = false;
 let translationProgress = { done: 0, total: 0 };
+let translationProgressHandle: ProgressHandle | null = null;
 let translationError: string | null = null;
 let pendingLateTranslations: LateGenerateResult[] = [];
 let loading = false;
@@ -337,8 +351,95 @@ let groupDraft: GroupDraft | null = null;
 let groupEditorError: string | null = null;
 let pendingDeleteGroup = false;
 let pendingImportExamples = false;
-let query = '';
+let memberFilterQuery = '';
+let queryRaw = '';
+let stateFilter: SkillStateFilter = 'all';
+let sortMode: SkillSortMode = 'default';
+const expandedSkills = new Set<string>();
+let lastBadgeCount: number | null | undefined;
 let initialized = false;
+
+const stateFilterOptions = () => [
+  { id: 'all', label: t('全部状态') },
+  { id: 'enabled', label: t('已启用') },
+  { id: 'disabled', label: t('已关闭') },
+  { id: 'attention', label: t('冲突与提示') },
+];
+
+const sortModeOptions = () => [
+  { id: 'default', label: t('默认顺序') },
+  { id: 'tokens', label: t('Token 降序') },
+];
+
+const translationTabs = mountTabs(translationTabsSlot, {
+  items: [
+    { id: 'original', label: t('原文') },
+    { id: 'translated', label: t('中文译文') },
+  ],
+  activeId: 'original',
+  trackBackground: true,
+  onChange: (id) => {
+    translationPreferenceSet = true;
+    displayMode = id === 'translated' ? 'translated' : 'original';
+    render();
+    if (displayMode === 'translated') void translateMissing();
+  },
+});
+
+const translateMissingBtn = mountButton(translateMissingSlot, {
+  label: t('补充翻译'),
+  variant: 'outline',
+  size: 'sm',
+  onClick: () => {
+    translationPreferenceSet = true;
+    displayMode = 'translated';
+    render();
+    void translateMissing();
+  },
+});
+
+const searchField = mountSearchField(searchSlot, {
+  value: '',
+  placeholder: t('搜索名称、描述或 ID（按 / 聚焦）'),
+  onChange: (value) => {
+    queryRaw = value;
+    renderList();
+  },
+});
+const searchInputEl = (): HTMLInputElement | null => searchSlot.querySelector<HTMLInputElement>('input');
+const syncSearchAria = (): void => {
+  const input = searchInputEl();
+  if (input) input.setAttribute('aria-label', t('搜索技能'));
+};
+syncSearchAria();
+
+const stateSelect = mountSelect(filterSlot, {
+  value: 'all',
+  options: stateFilterOptions(),
+  onChange: (id) => {
+    stateFilter = id === 'enabled' || id === 'disabled' || id === 'attention' ? id : 'all';
+    renderList();
+  },
+});
+const stateSelectTrigger = filterSlot.querySelector<HTMLButtonElement>('.oc-sdk-trigger');
+if (stateSelectTrigger) {
+  stateSelectTrigger.setAttribute('aria-label', t('状态筛选'));
+  stateSelectTrigger.removeAttribute('aria-labelledby');
+}
+
+const sortSelect = mountSelect(sortSlot, {
+  value: 'default',
+  options: sortModeOptions(),
+  onChange: (id) => {
+    sortMode = id === 'tokens' ? 'tokens' : 'default';
+    renderList();
+  },
+});
+const sortSelectTrigger = sortSlot.querySelector<HTMLButtonElement>('.oc-sdk-trigger');
+if (sortSelectTrigger) {
+  sortSelectTrigger.setAttribute('aria-label', t('排序方式'));
+  sortSelectTrigger.removeAttribute('aria-labelledby');
+}
 
 const groupSelect = mountSelect(groupSelectRoot, {
   value: 'all',
@@ -353,6 +454,48 @@ if (groupSelectTrigger) {
   groupSelectTrigger.setAttribute('aria-label', t('分组筛选'));
   groupSelectTrigger.removeAttribute('aria-labelledby');
 }
+
+document.addEventListener('keydown', (event) => {
+  if (event.defaultPrevented) return;
+  if (event.key === '/' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    const target = event.target as HTMLElement | null;
+    if (
+      target &&
+      (target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT' ||
+        target.isContentEditable)
+    ) {
+      return;
+    }
+    const input = searchInputEl();
+    if (input) {
+      event.preventDefault();
+      input.focus();
+      input.select();
+    }
+    return;
+  }
+  if (event.key === 'Escape') {
+    if (pendingOnlyGroup || pendingBulk !== null) {
+      event.preventDefault();
+      pendingOnlyGroup = null;
+      pendingBulk = null;
+      render();
+      return;
+    }
+    if (groupDraft && !busy) {
+      event.preventDefault();
+      if (pendingDeleteGroup || pendingImportExamples) {
+        pendingDeleteGroup = false;
+        pendingImportExamples = false;
+        render();
+      } else {
+        closeGroupEditor();
+      }
+    }
+  }
+});
 
 const rootBlocked = (): boolean => Boolean(data?.root.error);
 
@@ -591,14 +734,48 @@ const displayDescription = (skill: SkillView): string => {
 };
 
 const renderTranslationControls = (): void => {
-  translateButton.setAttribute('aria-pressed', displayMode === 'translated' ? 'true' : 'false');
-  originalButton.setAttribute('aria-pressed', displayMode === 'original' ? 'true' : 'false');
-  translateButton.disabled = translating;
+  translationTabs.update({
+    activeId: displayMode,
+    items: [
+      { id: 'original', label: t('原文') },
+      { id: 'translated', label: t('中文译文') },
+    ],
+  });
   const total = data?.skills.length ?? 0;
   const translated = translatedCount();
-  if (translating) translationStatus.textContent = t('翻译 {done}/{total}…', { done: translationProgress.done, total: translationProgress.total });
-  else if (displayMode === 'translated') translationStatus.textContent = translated ? t('{translated}/{total} 已翻译', { translated, total }) : t('点“翻译”生成中文');
-  else translationStatus.textContent = translated ? t('{count} 个有中文', { count: translated }) : '';
+  const untranslated = Math.max(0, total - translated);
+  translateMissingSlot.hidden = untranslated === 0 || translating || !data;
+  translateMissingBtn.update({
+    label: translated > 0 ? t('补充翻译') : t('翻译未译项'),
+    disabled: translating || Boolean(busy) || !data,
+  });
+  if (translating) {
+    const pct = translationProgress.total > 0
+      ? Math.round((translationProgress.done / translationProgress.total) * 100)
+      : 0;
+    if (!translationProgressHandle) {
+      translationProgressHandle = mountProgress(translationProgressSlot, { value: pct, tone: 'primary' });
+    } else {
+      translationProgressHandle.update({ value: pct, tone: 'primary' });
+    }
+    translationStatus.textContent = t('翻译 {done}/{total}…', {
+      done: translationProgress.done,
+      total: translationProgress.total,
+    });
+  } else {
+    if (translationProgressHandle) {
+      translationProgressHandle.dispose();
+      translationProgressHandle = null;
+      translationProgressSlot.replaceChildren();
+    }
+    if (displayMode === 'translated') {
+      translationStatus.textContent = translated
+        ? t('{translated}/{total} 已翻译', { translated, total })
+        : t('点“翻译”生成中文');
+    } else {
+      translationStatus.textContent = translated ? t('{count} 个有中文', { count: translated }) : '';
+    }
+  }
 };
 
 const groupSkillIds = (group: SkillGroup): string[] =>
@@ -650,6 +827,7 @@ const startGroupDraft = (group: SkillGroup | null): void => {
     name: group?.name ?? '',
     members: group ? [...group.skillIds] : [],
   };
+  memberFilterQuery = '';
   groupEditorError = null;
   pendingDeleteGroup = false;
   pendingImportExamples = false;
@@ -669,6 +847,7 @@ const openGroupEditor = (): void => {
 const closeGroupEditor = (): void => {
   if (busy) return;
   groupDraft = null;
+  memberFilterQuery = '';
   groupEditorError = null;
   pendingDeleteGroup = false;
   pendingImportExamples = false;
@@ -854,6 +1033,7 @@ const renderGroupEditor = (): void => {
   nameInput.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter') return;
     event.preventDefault();
+    if (event.isComposing || event.keyCode === 229) return;
     void saveGroupDraft();
   });
   nameField.append(nameInput);
@@ -863,7 +1043,14 @@ const renderGroupEditor = (): void => {
   const legend = el('legend', '', t('成员（{count}）', { count: draft.members.length }));
   members.append(legend);
   const tools = el('div', 'sk-members-tools');
+  const memberFilter = el('input', 'sk-member-filter') as HTMLInputElement;
+  memberFilter.type = 'search';
+  memberFilter.value = memberFilterQuery;
+  memberFilter.placeholder = t('筛选成员名称或 ID');
+  memberFilter.setAttribute('aria-label', t('筛选成员名称或 ID'));
+  memberFilter.disabled = Boolean(busy);
   tools.append(
+    memberFilter,
     actionButton(t('全选'), () => {
       if (!groupDraft) return;
       const existing = data?.skills.map((skill) => skill.id) ?? [];
@@ -879,28 +1066,121 @@ const renderGroupEditor = (): void => {
   );
   members.append(tools);
   const memberList = el('div', 'sk-member-list');
-  for (const skill of data?.skills ?? []) {
-    const row = el('label', 'sk-check');
-    const checkbox = el('input') as HTMLInputElement;
-    checkbox.type = 'checkbox';
-    checkbox.checked = draft.members.includes(skill.id);
-    checkbox.disabled = Boolean(busy);
-    checkbox.addEventListener('change', () => {
-      if (!groupDraft) return;
-      if (checkbox.checked) {
-        if (!groupDraft.members.includes(skill.id)) groupDraft.members.push(skill.id);
-      } else {
-        groupDraft.members = groupDraft.members.filter((id) => id !== skill.id);
-      }
-      legend.textContent = t('成员（{count}）', { count: groupDraft.members.length });
-      groupEditorError = null;
-    });
-    const copy = el('span', 'sk-check-copy');
-    copy.append(el('span', 'sk-check-name', displayName(skill)), el('code', 'sk-check-id', skill.id));
-    row.append(checkbox, copy);
-    memberList.append(row);
-  }
-  members.append(memberList);
+  const orderBox = el('div', 'sk-order-box');
+
+  const syncDraftUi = (focusKey?: string): void => {
+    if (!groupDraft) return;
+    legend.textContent = t('成员（{count}）', { count: groupDraft.members.length });
+    renderMemberChecklist();
+    renderOrderBox(focusKey);
+  };
+
+  const renderMemberChecklist = (): void => {
+    memberList.replaceChildren();
+    if (!groupDraft) return;
+    const allSkills = data?.skills ?? [];
+    const visibleSkills = allSkills.filter((skill) =>
+      matchesSkillQuery(skill, memberFilterQuery, translationEntry(skill)),
+    );
+    if (visibleSkills.length === 0) {
+      memberList.append(el('p', 'sk-member-empty', t('没有匹配的成员')));
+      return;
+    }
+    for (const skill of visibleSkills) {
+      const row = el('label', 'sk-check');
+      const checkbox = el('input') as HTMLInputElement;
+      checkbox.type = 'checkbox';
+      checkbox.checked = groupDraft.members.includes(skill.id);
+      checkbox.disabled = Boolean(busy);
+      checkbox.addEventListener('change', () => {
+        if (!groupDraft) return;
+        if (checkbox.checked) {
+          if (!groupDraft.members.includes(skill.id)) groupDraft.members.push(skill.id);
+        } else {
+          groupDraft.members = groupDraft.members.filter((id) => id !== skill.id);
+        }
+        groupEditorError = null;
+        legend.textContent = t('成员（{count}）', { count: groupDraft.members.length });
+        renderOrderBox();
+      });
+      const copy = el('span', 'sk-check-copy');
+      copy.append(el('span', 'sk-check-name', displayName(skill)), el('code', 'sk-check-id', skill.id));
+      row.append(checkbox, copy);
+      memberList.append(row);
+    }
+  };
+
+  const renderOrderBox = (focusKey?: string): void => {
+    orderBox.replaceChildren();
+    if (!groupDraft || groupDraft.members.length === 0) return;
+    orderBox.append(el('p', 'sk-order-title', t('已选步骤顺序（{count}）', { count: groupDraft.members.length })));
+    const list = el('ol', 'sk-order-list');
+    for (const [index, memberId] of groupDraft.members.entries()) {
+      const skill = data?.skills.find((candidate) => candidate.id === memberId) ?? null;
+      const memberLabel = skill ? displayName(skill) : memberId;
+      const item = el('li', 'sk-order-item');
+      const label = el('span', 'sk-order-label');
+      label.append(
+        el('span', 'sk-step', String(index + 1)),
+        el('span', 'sk-order-name', memberLabel),
+      );
+      const controls = el('span', 'sk-order-actions');
+      const up = el('button', 'sk-order-btn', '↑');
+      up.type = 'button';
+      up.disabled = Boolean(busy) || index === 0;
+      up.dataset.orderFocus = `up:${memberId}`;
+      up.title = t('上移「{name}」', { name: memberLabel });
+      up.setAttribute('aria-label', t('上移「{name}」', { name: memberLabel }));
+      up.addEventListener('click', () => {
+        if (!groupDraft) return;
+        groupDraft.members = moveGroupMember(groupDraft.members, index, -1);
+        syncDraftUi(`up:${memberId}`);
+      });
+
+      const down = el('button', 'sk-order-btn', '↓');
+      down.type = 'button';
+      down.disabled = Boolean(busy) || index === groupDraft.members.length - 1;
+      down.dataset.orderFocus = `down:${memberId}`;
+      down.title = t('下移「{name}」', { name: memberLabel });
+      down.setAttribute('aria-label', t('下移「{name}」', { name: memberLabel }));
+      down.addEventListener('click', () => {
+        if (!groupDraft) return;
+        groupDraft.members = moveGroupMember(groupDraft.members, index, 1);
+        syncDraftUi(`down:${memberId}`);
+      });
+
+      const remove = el('button', 'sk-order-btn', '×');
+      remove.type = 'button';
+      remove.disabled = Boolean(busy);
+      remove.title = t('移除「{name}」', { name: memberLabel });
+      remove.setAttribute('aria-label', t('移除「{name}」', { name: memberLabel }));
+      remove.addEventListener('click', () => {
+        if (!groupDraft) return;
+        groupDraft.members = groupDraft.members.filter((id) => id !== memberId);
+        syncDraftUi();
+      });
+
+      controls.append(up, down, remove);
+      item.append(label, controls);
+      list.append(item);
+    }
+    orderBox.append(list);
+    if (focusKey) {
+      const btn = Array.from(orderBox.querySelectorAll<HTMLButtonElement>('[data-order-focus]')).find(
+        (node) => node.dataset.orderFocus === focusKey && !node.disabled,
+      );
+      btn?.focus();
+    }
+  };
+
+  memberFilter.addEventListener('input', () => {
+    memberFilterQuery = memberFilter.value;
+    renderMemberChecklist();
+  });
+
+  renderMemberChecklist();
+  renderOrderBox();
+  members.append(memberList, orderBox);
 
   const existingIds = new Set(data?.skills.map((skill) => skill.id) ?? []);
   const missing = draft.members.filter((id) => !existingIds.has(id));
@@ -1125,21 +1405,51 @@ const applyOnlyGroup = async (): Promise<void> => {
   render();
 };
 
-translateButton.addEventListener('click', () => {
-  translationPreferenceSet = true;
-  displayMode = 'translated';
-  render();
-  void translateMissing();
-});
-originalButton.addEventListener('click', () => {
-  translationPreferenceSet = true;
-  displayMode = 'original';
-  render();
-});
+const copyText = async (value: string, message: string): Promise<void> => {
+  try {
+    await host.writeClipboard(value);
+    void host.toast({ kind: 'success', message }).catch(() => undefined);
+  } catch (error) {
+    notice = { text: describeError(error), tone: 'error' };
+    renderNotice();
+  }
+};
+
+const appendSkillMenu = (container: HTMLElement, skill: SkillView): void => {
+  const menuSlot = el('span', 'sk-menu-slot');
+  const entryPath = skill.activePaths[0] ?? skill.disabledPaths[0] ?? null;
+  mountMenu(menuSlot, {
+    label: '⋯',
+    variant: 'ghost',
+    size: 'sm',
+    items: [
+      { id: 'copy-path', label: t('复制入口路径'), disabled: !entryPath },
+      { id: 'copy-id', label: t('复制技能 ID') },
+      { separator: true },
+      { id: 'retranslate', label: t('单独重译此项'), disabled: translating || Boolean(busy) },
+    ],
+    onSelect: (id) => {
+      if (id === 'copy-path' && entryPath) {
+        void copyText(entryPath, t('已复制入口路径。'));
+      } else if (id === 'copy-id') {
+        void copyText(skill.id, t('已复制技能 ID。'));
+      } else if (id === 'retranslate') {
+        void translateSingle(skill);
+      }
+    },
+  });
+  const trigger = menuSlot.querySelector<HTMLButtonElement>('.oc-sdk-btn');
+  if (trigger) {
+    trigger.setAttribute('aria-label', `${t('更多操作')} ${skill.name}`);
+    trigger.title = t('更多操作');
+  }
+  container.append(menuSlot);
+};
 
 const skillAction = (skill: SkillView): HTMLElement => {
   const holder = el('div', 'sk-skill-action');
   const note = el('span', 'sk-action-note');
+  const top = el('div', 'sk-action-top');
   const blocked = rootBlocked();
 
   if (skill.state === 'conflict') {
@@ -1151,7 +1461,9 @@ const skillAction = (skill: SkillView): HTMLElement => {
       conflictRoot.scrollIntoView({ block: 'nearest' });
       conflictRoot.querySelector<HTMLButtonElement>('button')?.focus();
     });
-    holder.append(note, button);
+    top.append(button);
+    appendSkillMenu(top, skill);
+    holder.append(note, top);
     return holder;
   }
 
@@ -1167,6 +1479,7 @@ const skillAction = (skill: SkillView): HTMLElement => {
     off.disabled = Boolean(busy) || blocked;
     off.addEventListener('click', () => void toggleSkill(skill, false));
     actions.append(on, off);
+    appendSkillMenu(actions, skill);
     holder.append(note, actions);
     return holder;
   }
@@ -1187,7 +1500,9 @@ const skillAction = (skill: SkillView): HTMLElement => {
 
   if (checked) note.textContent = blocked ? t('目录无法读取') : skill.advertised ? t('模型可见') : t('模型不可见');
   else note.textContent = blocked ? t('目录无法读取') : t('入口已关闭');
-  holder.append(note, control);
+  top.append(control);
+  appendSkillMenu(top, skill);
+  holder.append(note, top);
   return holder;
 };
 
@@ -1208,14 +1523,48 @@ const renderSkill = (skill: SkillView, step = 0): HTMLElement => {
   const meta = el('div', 'sk-meta');
   if (translated) meta.append(el('span', 'sk-original-name', skill.name));
   meta.append(el('code', 'sk-id', skill.id));
-  const description = el('p', 'sk-desc', translated?.descriptionZh || skill.description || t('无 description，模型不会自动选用。'));
+  if (skill.estimatedTokens > 0) {
+    meta.append(
+      el('span', 'sk-token', t('~{tokens} tok', { tokens: skill.estimatedTokens.toLocaleString(i18n.locale) })),
+    );
+  }
+  const rawDescription = translated?.descriptionZh || skill.description;
+  const descriptionText = rawDescription || t('无 description，模型不会自动选用。');
+  const description = el('p', 'sk-desc', descriptionText);
+  const expanded = expandedSkills.has(skill.id);
+  if (expanded) description.classList.add('is-expanded');
   main.append(head, meta, description);
+  if (rawDescription.length > 88 || rawDescription.includes('\n')) {
+    const toggleDesc = el('button', 'sk-desc-toggle', expanded ? t('收起说明') : t('展开说明'));
+    toggleDesc.type = 'button';
+    toggleDesc.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    toggleDesc.addEventListener('click', () => {
+      const nextExpanded = !expandedSkills.has(skill.id);
+      if (nextExpanded) expandedSkills.add(skill.id);
+      else expandedSkills.delete(skill.id);
+      description.classList.toggle('is-expanded', nextExpanded);
+      toggleDesc.textContent = nextExpanded ? t('收起说明') : t('展开说明');
+      toggleDesc.setAttribute('aria-expanded', nextExpanded ? 'true' : 'false');
+    });
+    main.append(toggleDesc);
+  }
   if (skill.warnings.length > 0) {
     const warning = el('p', 'sk-warn', skill.warnings.slice(0, 2).map((item) => serverText(item) ?? item).join(' · '));
     main.append(warning);
   }
   row.append(main, skillAction(skill));
   return row;
+};
+
+const resetFilters = (): void => {
+  queryRaw = '';
+  stateFilter = 'all';
+  sortMode = 'default';
+  searchField.update({ value: '', placeholder: t('搜索名称、描述或 ID（按 / 聚焦）') });
+  syncSearchAria();
+  stateSelect.update({ value: 'all', options: stateFilterOptions() });
+  sortSelect.update({ value: 'default', options: sortModeOptions() });
+  renderList();
 };
 
 const renderList = (): void => {
@@ -1227,27 +1576,40 @@ const renderList = (): void => {
         .map((id) => data?.skills.find((skill) => skill.id === id))
         .filter((skill): skill is SkillView => Boolean(skill))
     : data.skills;
-  const skills = base.filter((skill) => {
-    if (!query) return true;
-    const entry = translationEntry(skill);
-    const haystack = [
-      skill.id,
-      skill.name,
-      skill.description,
-      entry?.nameZh ?? '',
-      entry?.descriptionZh ?? '',
-      ...skill.warnings,
-    ].join(' ').toLowerCase();
-    return haystack.includes(query);
+  const skills = filterAndSortSkills(base, {
+    query: queryRaw,
+    stateFilter,
+    sortMode,
+    getTranslation: translationEntry,
   });
   if (skills.length === 0) {
+    const hasFilter = queryRaw.trim().length > 0 || stateFilter !== 'all';
     const empty = el('div', 'sk-empty');
     empty.append(
-      el('h2', '', data.skills.length === 0 ? t('没有发现技能') : group ? t('这个分组没有可用技能') : t('没有匹配的技能')),
-      el('p', '', data.skills.length === 0
-        ? t('检查 ~/.config/opencode/skills 是否存在，或重新扫描。')
-        : group ? t('检查分组里的技能是否被移除。') : t('换一个搜索词。')),
+      el(
+        'h2',
+        '',
+        data.skills.length === 0
+          ? t('没有发现技能')
+          : group && base.length === 0
+            ? t('这个分组没有可用技能')
+            : t('没有匹配的技能'),
+      ),
+      el(
+        'p',
+        '',
+        data.skills.length === 0
+          ? t('检查 ~/.config/opencode/skills 是否存在，或重新扫描。')
+          : group && base.length === 0
+            ? t('检查分组里的技能是否被移除。')
+            : t('换一个搜索词或调整状态筛选条件。'),
+      ),
     );
+    if (data.skills.length > 0 && hasFilter) {
+      const actions = el('div', 'sk-empty-actions');
+      actions.append(actionButton(t('重置筛选'), resetFilters));
+      empty.append(actions);
+    }
     listRoot.append(empty);
     return;
   }
@@ -1257,8 +1619,22 @@ const renderList = (): void => {
   }
 };
 
+const syncRailBadge = (): void => {
+  const next = !data
+    ? null
+    : data.root.error
+      ? 1
+      : data.summary.blockingConflicts > 0
+        ? data.summary.blockingConflicts
+        : null;
+  if (next === lastBadgeCount) return;
+  lastBadgeCount = next;
+  void host.setBadge(next).catch(() => undefined);
+};
+
 const render = (): void => {
   app.setAttribute('aria-busy', loading ? 'true' : 'false');
+  syncRailBadge();
   renderSummary();
   renderTranslationControls();
   renderNotice();
@@ -1443,6 +1819,51 @@ const translateMissing = async (): Promise<void> => {
   }
 };
 
+const translateSingle = async (skill: SkillView): Promise<void> => {
+  if (!data || translating || busy) return;
+  translating = true;
+  translationError = null;
+  translationProgress = { done: 0, total: 1 };
+  notice = { text: t('正在重译「{name}」…', { name: skill.name }), tone: 'info' };
+  render();
+  try {
+    const generated = await host.generate({
+      prompt: buildTranslationPrompt([{ id: skill.id, name: skill.name, description: skill.description }]),
+      system: TRANSLATION_SYSTEM,
+      maxOutputTokens: 1024,
+    });
+    const parsed = parseTranslationResponse(generated.text);
+    const match = parsed.find((item) => item.id === skill.id) ?? (parsed.length === 1 ? parsed[0] : null);
+    if (!match) {
+      notice = { text: t('未能解析「{name}」的翻译结果，请重试。', { name: skill.name }), tone: 'warning' };
+    } else {
+      translations.entries[skill.id] = {
+        hash: skill.contentHash,
+        nameZh: match.nameZh,
+        descriptionZh: match.descriptionZh,
+        updatedAt: Date.now(),
+      };
+      displayMode = 'translated';
+      translationPreferenceSet = true;
+      await saveTranslations();
+      if (translationError) {
+        notice = { text: t('翻译完成，但缓存保存失败：{error}', { error: translationError }), tone: 'warning' };
+      } else {
+        const message = t('已更新「{name}」的中文译文。', { name: skill.name });
+        notice = { text: message, tone: 'success' };
+        void host.toast({ kind: 'success', message }).catch(() => undefined);
+      }
+    }
+  } catch (error) {
+    translationError = describeError(error);
+    notice = { text: translationError, tone: 'error' };
+  } finally {
+    translating = false;
+    translationProgress = { done: 1, total: 1 };
+    render();
+  }
+};
+
 const reloadGroups = async (force = false): Promise<void> => {
   if ((groupsLoading && !force) || groupDraft) return;
   groupsLoading = true;
@@ -1599,13 +2020,15 @@ const applyBulk = async (): Promise<void> => {
 const localize = (): void => {
   app.setAttribute('aria-label', t('技能开关'));
   title.textContent = t('技能开关');
-  translationSegment.setAttribute('aria-label', t('技能说明语言'));
-  translateButton.textContent = t('翻译');
-  originalButton.textContent = t('原文');
+  translationTabsSlot.setAttribute('aria-label', t('技能说明语言'));
   enableAll.update({ label: t('全部启用') });
   disableAll.update({ label: t('全部关闭') });
-  search.placeholder = t('搜索名称或 ID');
-  search.setAttribute('aria-label', t('搜索技能'));
+  searchField.update({ value: queryRaw, placeholder: t('搜索名称、描述或 ID（按 / 聚焦）') });
+  syncSearchAria();
+  stateSelect.update({ value: stateFilter, options: stateFilterOptions() });
+  stateSelectTrigger?.setAttribute('aria-label', t('状态筛选'));
+  sortSelect.update({ value: sortMode, options: sortModeOptions() });
+  sortSelectTrigger?.setAttribute('aria-label', t('排序方式'));
   footerLine1.textContent = t('管理 ~/.config/opencode/skills。关闭会把技能入口改名为 .disabled；OpenCode 不再加载，模型也看不到。');
   footerLine2.textContent = t('只显示这个目录里的文件技能。停用或卸载前先全部启用；技能更新后重新扫描。');
   groupSelectTrigger?.setAttribute('aria-label', t('分组筛选'));

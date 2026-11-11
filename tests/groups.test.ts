@@ -7,6 +7,7 @@ import {
   GroupFileError,
   cloneExampleGroups,
   mergeExampleGroups,
+  moveGroupMember,
   normalizeGroupsFile,
 } from '../src/shared/groups.ts';
 
@@ -65,4 +66,14 @@ test('group config rejects reserved ids, duplicate names and empty payloads', ()
   assert.throws(() => normalizeGroupsFile({ version: 1, groups: [{ ...group, name: '   ' }] }), GroupFileError);
   assert.throws(() => normalizeGroupsFile({ version: 1, groups: [group, { ...group }] }), GroupFileError);
   assert.throws(() => normalizeGroupsFile({ version: 1, groups: [{ ...group, name: 'x'.repeat(41) }] }), GroupFileError);
+});
+
+test('moveGroupMember reorders step items safely without mutating input', () => {
+  const original = ['step-1', 'step-2', 'step-3'];
+  assert.deepEqual(moveGroupMember(original, 1, -1), ['step-2', 'step-1', 'step-3']);
+  assert.deepEqual(moveGroupMember(original, 1, 1), ['step-1', 'step-3', 'step-2']);
+  assert.deepEqual(moveGroupMember(original, 0, -1), ['step-1', 'step-2', 'step-3']);
+  assert.deepEqual(moveGroupMember(original, 2, 1), ['step-1', 'step-2', 'step-3']);
+  assert.deepEqual(moveGroupMember(original, -1, 1), ['step-1', 'step-2', 'step-3']);
+  assert.deepEqual(original, ['step-1', 'step-2', 'step-3']);
 });

@@ -1,6 +1,6 @@
 {
   "name": "openchamber-skills",
-  "version": "0.3.4",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "OpenChamber 技能开关：启停 OpenCode 技能、中文翻译和联动分组。",
@@ -44,6 +44,5 @@
     "panel/",
     "service/",
     "README.md"
-  ],
-  "license": "MIT"
+  ]
 }
